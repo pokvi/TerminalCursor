@@ -1,0 +1,67 @@
+========================================================================
+ LETHAL COMPANY — TerminalMouse. РЕАЛЬНЫЕ ПУТИ (проверено на машине)
+========================================================================
+
+РЕПОЗИТОРИЙ ПРОЕКТА (здесь и только здесь менять код):
+  D:\.code\pokvi_code\LethalCompany_TerminalMouse\
+    TerminalMouse\
+      Plugin.cs              <- основной код мода
+      AutoStart.cs           <- авто-хост лобби + авто-открытие терминала
+      TerminalMouse.csproj   <- конфиг сборки (пути к DLL игры)
+    TerminalMouse.sln
+    publish\                 <- сюда PostBuild копирует готовый dll
+
+ИГРА (Lethal Company):
+  D:\steam\steamapps\common\Lethal Company\
+    Lethal Company_Data\Managed\          <- игровые DLL для сборки
+      Assembly-CSharp.dll
+      Unity.Netcode.Runtime.dll
+      Unity.Netcode.Components.dll
+      Unity.Networking.Transport.dll
+      Unity.InputSystem.dll
+      UnityEngine.CoreModule.dll
+      Facepunch.Steamworks.Win64.dll
+    BepInEx\plugins\                      <- сюда класть готовый TerminalMouse.dll
+      MMHOOK\                             <- MMHOOK_*.dll (нужны для сборки)
+      TerminalMouse\                      <- текущая установленная версия
+
+r2modman профиль: Default (НЕ figaR/MyTest, как в чужом csproj!)
+
+------------------------------------------------------------------------
+ ПРОБЛЕМА HEAD (из-за которой всё ломалось)
+------------------------------------------------------------------------
+csproj в HEAD — чужой (автор figaR), пути захардкожены под его машину:
+  C:\Users\figaR\...                    <- нет на этой машине
+  C:\Program Files (x86)\Steam\...      <- игра реально в D:\steam\
+  ..\..\Assembly-CSharp-nstrip.dll      <- такого файла нет
+Поэтому HEAD НЕ собирается. Первый шаг любой работы — починить csproj
+под реальные пути выше, иначе любой код непроверяем = трата токенов.
+
+------------------------------------------------------------------------
+ ПРАВИЛА, ЧТОБЫ НЕ ПЛОДИТЬ МУСОР
+------------------------------------------------------------------------
+1. НЕ создавать временные файлы (.ps1, .py, .txt, *_tmp, probe_*) в репо.
+   Для проверки API игры читать DLL точечно, не писать скрипты-разведчики.
+2. НЕ декомпилировать игру целиком и не складывать дампы в репо.
+3. НЕ менять Plugin.cs/AutoStart.cs, пока csproj не собирается зелёным.
+4. Перед правкой файла: git diff. После: dotnet build -c Release (смотреть
+   только последние строки, не лог целиком).
+5. Один логический шаг = один коммит. Не коммитить временные файлы.
+6. НЕ писать в BepInEx\plugins\ исходники — только готовый .dll.
+
+------------------------------------------------------------------------
+ СБОРКА / ДЕПЛОЙ
+------------------------------------------------------------------------
+  cd D:\.code\pokvi_code\LethalCompany_TerminalMouse
+  dotnet build -c Release
+  copy TerminalMouse\bin\Release\netstandard2.1\TerminalMouse.dll `
+    "D:\steam\steamapps\common\Lethal Company\BepInEx\plugins\TerminalMouse\"
+
+------------------------------------------------------------------------
+ API ИГРЫ, ПРОВЕРЕНОЕ НА ТЕКУЩЕЙ СБОРКЕ (Assembly-CSharp.dll)
+------------------------------------------------------------------------
+  ЕСТЬ:  GameNetworkManager, StartHost, StartOfRound, Terminal,
+         GameNetcodeStuff.PlayerControllerB, CauseOfDeath, HUD, GameStats
+  НЕТ:   MenuScene, Mirror (влит в Assembly-CSharp), StartSinglePlayerGame
+  => авто-хост: рефлексия на GameNetworkManager.StartHost
+  => авто-терминал: через Terminal (как в Plugin.cs)
