@@ -3,7 +3,7 @@ using System.Reflection;
 using BepInEx.Logging;
 using UnityEngine;
 
-namespace TerminalMouse
+namespace TerminalCursor
 {
     /// <summary>
     /// Автоматизация тестирования: авто-хост лобби + авто-открытие терминала.
@@ -21,7 +21,7 @@ namespace TerminalMouse
         /// </summary>
         public static void Attach(ManualLogSource log)
         {
-            var go = new GameObject("[TerminalMouse] AutoStart");
+            var go = new GameObject("[TerminalCursor] AutoStart");
             DontDestroyOnLoad(go);
             var comp = go.AddComponent<AutoStart>();
             comp._log = log;

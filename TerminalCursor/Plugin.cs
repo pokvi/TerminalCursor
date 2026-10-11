@@ -7,10 +7,10 @@ using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
 
-namespace TerminalMouse
+namespace TerminalCursor
 {
     [BepInPlugin(PluginInfo.PLUGIN_GUID, PluginInfo.PLUGIN_NAME, PluginInfo.PLUGIN_VERSION)]
-    public class TerminalMousePlugin : BaseUnityPlugin
+    public class TerminalCursorPlugin : BaseUnityPlugin
     {
 
         public static ManualLogSource mls;

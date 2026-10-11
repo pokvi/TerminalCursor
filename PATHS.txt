@@ -3,16 +3,18 @@
 ========================================================================
 
 РЕПОЗИТОРИЙ ПРОЕКТА (здесь и только здесь менять код):
-  D:\.code\pokvi_code\LethalCompany_TerminalMouse\
+  D:\.code\pokvi_code\TerminalCursor\
     TerminalMouse\
       Plugin.cs              <- основной код мода
       AutoStart.cs           <- авто-хост лобби + авто-открытие терминала
       TerminalMouse.csproj   <- конфиг сборки (пути к DLL игры)
+    test.bat                 <- ОДИН СПОСОБ тестировать мод (см. ниже)
     TerminalMouse.sln
     publish\                 <- сюда PostBuild копирует готовый dll
 
 ИГРА (Lethal Company):
   D:\steam\steamapps\common\Lethal Company\
+    Lethal Company.exe                <- запускать только через test.bat
     Lethal Company_Data\Managed\          <- игровые DLL для сборки
       Assembly-CSharp.dll
       Unity.Netcode.Runtime.dll
@@ -21,24 +23,54 @@
       Unity.InputSystem.dll
       UnityEngine.CoreModule.dll
       Facepunch.Steamworks.Win64.dll
-    BepInEx\plugins\                      <- сюда класть готовый TerminalMouse.dll
+    BepInEx\plugins\                      <- сюда кладётся TerminalMouse.dll
       MMHOOK\                             <- MMHOOK_*.dll (нужны для сборки)
-      TerminalMouse\                      <- текущая установленная версия
+      TerminalMouse\TerminalMouse.dll     <- куда легит наша сборка
+      disabled\                           <- сюда свалены нерабочие чужие моды
+    BepInEx\LogOutput.log                 <- лог BepInEx и всех модов
 
-r2modman профиль: Default (НЕ figaR/MyTest, как в чужом csproj!)
+Юзер-данные игры (Second Lyfe / текущая сборка):
+  %USERPROFILE%\AppData\LocalLow\ZeekerssRBLX\Lethal Company\Player.log
 
+ ------------------------------------------------------------------------
+  ПРОБЛЕМА HEAD (из-за которой всё ломалось)
 ------------------------------------------------------------------------
- ПРОБЛЕМА HEAD (из-за которой всё ломалось)
-------------------------------------------------------------------------
-csproj в HEAD — чужой (автор figaR), пути захардкожены под его машину:
+csproj в HEAD был чужой (автор figaR), пути захардкожены под его машину:
   C:\Users\figaR\...                    <- нет на этой машине
   C:\Program Files (x86)\Steam\...      <- игра реально в D:\steam\
   ..\..\Assembly-CSharp-nstrip.dll      <- такого файла нет
-Поэтому HEAD НЕ собирается. Первый шаг любой работы — починить csproj
-под реальные пути выше, иначе любой код непроверяем = трата токенов.
+Поэтому HEAD не собирался. Сейчас csproj починен: пути идут из переменных
+GameDir / ManagedDir / MMHOOKDir / PluginDir внутри csproj.
 
+ ------------------------------------------------------------------------
+  ТЕСТЫ / ЗАПУСК ИГРЫ — ТОЛЬКО ЧЕРЕЗ test.bat (инструкция для AI-агента)
 ------------------------------------------------------------------------
- ПРАВИЛА, ЧТОБЫ НЕ ПЛОДИТЬ МУСОР
+AI-агент обязан проверять мод ИСКЛЮЧИТЕЛЬНО запуском test.bat из корня
+репозитория. НЕ запускать игру вручную, НЕ писать свои .ps1/.py для
+запуска игры, НЕ читать логи по кусочкам своими командами.
+
+  cd D:\.code\pokvi_code\TerminalCursor
+  .\test.bat 90          <- 90 = сколько секунд дать игре поработать
+
+Батник делает весь цикл сам:
+  1. убивает запущенную игру (иначе dll в папке модов залочена и не
+     перезапишется — на этом спотыкались уже дважды)
+  2. dotnet build -c Release: при ЛЮБОЙ ошибке компиляции сразу выход с
+     кодом 1, игру не трогает, плагин не перезаписывает
+  3. кладёт свежий TerminalMouse.dll в BepInEx\plugins\TerminalMouse\
+     (сверка по hash; если залочено — переименовывает старый и пишет
+     новый; не вышло — выход с кодом 2, дальше ничего не проверяем)
+  4. удаляет старые логи и запускает игру со своим -logFile
+  5. ждёт N секунд; если игра умерла раньше — это краш, пишет об этом
+  6. УБИВАЕТ игру и сам печатает: строки мода и ошибки из LogOutput.log,
+     строки мода из Player.log и последние 30 строк Player.log
+
+Коды возврата: 0 = прогон состоялся, 1 = ошибка сборки, 2 = dll не легла.
+Полные копии логов после прогона лежат в подпапке terminalmouse_test
+внутри %TEMP% (LogOutput.last.log и Player.log).
+
+ ------------------------------------------------------------------------
+  ПРАВИЛА, ЧТОБЫ НЕ ПЛОДИТЬ МУСОР
 ------------------------------------------------------------------------
 1. НЕ создавать временные файлы (.ps1, .py, .txt, *_tmp, probe_*) в репо.
    Для проверки API игры читать DLL точечно, не писать скрипты-разведчики.
@@ -48,20 +80,36 @@ csproj в HEAD — чужой (автор figaR), пути захардкоже�
    только последние строки, не лог целиком).
 5. Один логический шаг = один коммит. Не коммитить временные файлы.
 6. НЕ писать в BepInEx\plugins\ исходники — только готовый .dll.
+7. Реальные изменения ВНЕ репо (папка игры, отключение чужих модов) —
+   только сказав пользователю, что именно и зачем, и обратимо.
 
+ ------------------------------------------------------------------------
+  СБОРКА / ДЕПЛОЙ (руками, если test.bat не нужен целиком)
 ------------------------------------------------------------------------
- СБОРКА / ДЕПЛОЙ
-------------------------------------------------------------------------
-  cd D:\.code\pokvi_code\LethalCompany_TerminalMouse
-  dotnet build -c Release
-  copy TerminalMouse\bin\Release\netstandard2.1\TerminalMouse.dll `
-    "D:\steam\steamapps\common\Lethal Company\BepInEx\plugins\TerminalMouse\"
+   cd D:\.code\pokvi_code\TerminalCursor
+   dotnet build -c Release
+   copy TerminalMouse\bin\Release\netstandard2.1\TerminalMouse.dll `
+     "D:\steam\steamapps\common\Lethal Company\BepInEx\plugins\TerminalMouse\"
 
-------------------------------------------------------------------------
- API ИГРЫ, ПРОВЕРЕНОЕ НА ТЕКУЩЕЙ СБОРКЕ (Assembly-CSharp.dll)
+ ------------------------------------------------------------------------
+  API ИГРЫ, ПРОВЕРЕНОЕ НА ТЕКУЩЕЙ СБОРКЕ (Assembly-CSharp.dll)
 ------------------------------------------------------------------------
   ЕСТЬ:  GameNetworkManager, StartHost, StartOfRound, Terminal,
          GameNetcodeStuff.PlayerControllerB, CauseOfDeath, HUD, GameStats
   НЕТ:   MenuScene, Mirror (влит в Assembly-CSharp), StartSinglePlayerGame
+  Сигнатуры (проверены рефлексией, старше — не совпадали):
+         Terminal.QuitTerminal(bool syncTerminalInUse)
+         PlayerControllerB.KillPlayer(Vector3, bool, CauseOfDeath, int,
+                                      Vector3 positionOffset, bool setOverrideDropItems)
   => авто-хост: рефлексия на GameNetworkManager.StartHost
   => авто-терминал: через Terminal (как в Plugin.cs)
+
+ ------------------------------------------------------------------------
+  ЧТО ПОКА НЕ ЧИНИТСЯ (открытая проблема, не забыть)
+------------------------------------------------------------------------
+  Мод грузится ("Plugin TerminalMouse is loaded!"), но из AutoStart.cs НЕ
+  приходит НИ ОДНОЙ строки лога, и игра тихо сворачивается через ~1-2 мин
+  после Chainloader startup complete (ни Exception, ни crash-дампа).
+  Подозрение: AutoStart.Attach() в Awake создаёт GameObject до готовности
+  сцены/меню, либо WaitUntil на GameNetworkManager.Instance не доживает.
+  Проверять только через test.bat и смотреть Player.log.

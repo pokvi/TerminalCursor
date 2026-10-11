@@ -2,8 +2,8 @@
 
     <PropertyGroup>
         <TargetFramework>netstandard2.1</TargetFramework>
-        <AssemblyName>TerminalMouse</AssemblyName>
-        <Description>TerminalMouse mod</Description>
+        <AssemblyName>TerminalCursor</AssemblyName>
+        <Description>TerminalCursor mod</Description>
         <Version>1.0.1</Version>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>latest</LangVersion>
@@ -11,7 +11,10 @@
         <GameDir>D:\steam\steamapps\common\Lethal Company</GameDir>
         <ManagedDir>$(GameDir)\Lethal Company_Data\Managed</ManagedDir>
         <MMHOOKDir>$(GameDir)\BepInEx\plugins\MMHOOK</MMHOOKDir>
-        <PluginDir>$(GameDir)\BepInEx\plugins\TerminalMouse</PluginDir>
+        <PluginDir>$(GameDir)\BepInEx\plugins\TerminalCursor</PluginDir>
+        <!-- Корень репозитория. $(SolutionDir) не задана при сборке одного csproj,
+             поэтому считаем путь от самого файла проекта. -->
+        <RepoDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\'))</RepoDir>
     </PropertyGroup>
 
     <ItemGroup>
@@ -65,8 +68,10 @@
     <Target Name="PostBuild" AfterTargets="PostBuildEvent">
         <Exec Condition="Exists('$(PluginDir)')"
               Command="copy /Y &quot;$(TargetDir)$(ProjectName).dll&quot; &quot;$(PluginDir)\$(ProjectName).dll&quot;" />
-        <Exec Command="copy /Y &quot;$(TargetDir)$(ProjectName).dll&quot; &quot;$(SolutionDir)publish\$(ProjectName).dll&quot;" />
-        <Exec Command="copy /Y &quot;$(SolutionDir)README.md&quot; &quot;$(SolutionDir)publish\README.md&quot;" />
+        <Exec Condition="Exists('$(RepoDir)publish')"
+              Command="copy /Y &quot;$(TargetDir)$(ProjectName).dll&quot; &quot;$(RepoDir)publish\$(ProjectName).dll&quot;" />
+        <Exec Condition="Exists('$(RepoDir)README.md')"
+              Command="copy /Y &quot;$(RepoDir)README.md&quot; &quot;$(RepoDir)publish\README.md&quot;" />
     </Target>
 
 </Project>
