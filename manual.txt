@@ -228,32 +228,24 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     GameObject плагина игра уничтожает при первой загрузке сцены, Update
     плагина не вызывается. Создавать через EnsureRunner().
 
-НЕ РЕШЕНО ДО КОНЦА (сходи с этого места):
-  Мигание каретки input-поля в случайном месте текста:
-  - когда: повторный вход в терминал после смены узла/ввода текста
-    (скрин: каретка мелькала после 'w' в 'wildlife');
-  - ввод при съехавшей каретке ломается: буквы вставляются не туда;
-  - ЧТО УЖЕ ПРОВАЖЕНО: MoveTextEnd(false) - крутит caret-индексы по
-    устаревшему textInfo; stringPosition = text.Length в постфиксах
-    OnSubmit/BeginUsingTerminal - помогает, но НЕ всегда (активация поля
-    приходит позже постфикса: selectTextFieldDelayed - корутина 1с);
-    per-frame KeepCaretAtEnd (stringPosition+selectionFocusPosition в
-    конец) - по словам юзера всё равно не помогло.
-  - Механика из TMP_InputField.cs (декомпилирован): каретка рисуется
-    GenerateCaret по m_CaretPosition (Индекс в textInfo!), пересчёт
-    строки->индекса идёт только в Rebuild при m_IsCaretPositionDirty или
-    в ON_TEXT_CHANGED (TEXT_CHANGED_EVENT). SetText клампит позицию
-    только если она > длины. OnFocus() зовёт SelectAll (m_OnFocusSelectAll
-    = true по умолчанию) - ставит stringPosition=text.Length,
-    stringSelectPosition=0 (выделение всего).
-  - ИДЕЯ для продолжения: похоже, мелькает ВЫДЕЛЕНИЕ (selection highlight,
-    GenerateHightlight) а не каретка, либо каретка рисуется по старому
-    caret-индексу до первого ON_TEXT_CHANGED. Проверить: отключить
-    подсветку выделения (selectionColor / снимать m_isSelectAll), или
-    ставить stringPosition И stringSelectPosition синхронно в конец
-    СРАЗУ после ActivateInputFieldInternal (хук на TMP_InputField.LateUpdate
-    / m_ShouldActivateNextUpdate), или хук ON_TEXT_CHANGED и в нём двигать
-позицию. Тест: бестиарий -> набрать 1234567 -> выйти -> зайти.
+РЕШЕНО (коммит 843f1c1):
+  Мигание каретки input-поля в случайном месте текста — ИСПРАВЛЕНО.
+  Причина: Terminal.Update каждый кадр делает screenText.caretPosition =
+  text.Length. caretPosition — это ИНДЕКС В textInfo, а не строковый индекс.
+  При смене узла текст уже новый (len=268), но textInfo.characterCount ещё
+  старый (cc=157). Сеттер caretPosition клампит 268 до 156, поднимает
+  m_IsStringPositionDirty. В OnFillVBO из caret-индекса 156 пересчитывается
+  строковая позиция 156 — наша позиция конца затирается. Один кадр каретка
+  рисуется по textInfo[156] новой раскладки = середина текста.
+  Проверено Harmony-логами (cc, cp, sp каждый кадр):
+    ДО:  fill cc=157 sp=268 cp=156 -> fill cc=269 sp=156 cp=156 (середина)
+    ПОСЛЕ: fill cc=157 sp=268 cp=156 -> fill cc=269 sp=268 cp=268 (в конце)
+  Фикс: Harmony-патч Prefix на TMP_InputField.OnFillVBO (LatePreRender).
+  Это единственная точка, где textInfo гарантированно актуален (меш
+  перестроен в PreRender). Ставим cp=cc-1, sp=len, сбрасываем dirty-флаги.
+  Побочное отключение SelectAll (onFocusSelectAll=false в BeginUsingTerminal):
+  предотвращает выделение всего текста при фокусе, которое при вводе символа
+  могло бы затирается. Не мешает кликам и вводу.
 
  ------------------------------------------------------------------------
   ДЕКОМПИЛЯЦИЯ — D:\.code\pokvi_code\LethalCompany_decompiled

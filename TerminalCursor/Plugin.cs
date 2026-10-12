@@ -2,7 +2,9 @@ using BepInEx;
 using BepInEx.Logging;
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Text;
+using HarmonyLib;
 using TMPro;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -19,7 +21,7 @@ namespace TerminalCursor
         bool wasVisible = false;
 
         // Текущий открытый терминал (пока terminalInUse).
-        static Terminal currentTerminal;
+        internal static Terminal currentTerminal;
 
         // --- состояние кликов ---
         static string lastText;       // последняя строка (сигнатура раскладки)
@@ -63,6 +65,19 @@ On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
             On.GameNetcodeStuff.PlayerControllerB.KillPlayer += PlayerControllerB_KillPlayer;
 
             mls.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
+
+            // Патч OnFillVBO - единственная точка, где можно выставить каретку по
+            // актуальному textInfo (см. комментарий у Patch_OnFillVBO).
+            CaretAccess.Init();
+            try
+            {
+                var harmony = new Harmony(PluginInfo.PLUGIN_GUID);
+                harmony.PatchAll(typeof(TerminalCursorPlugin).Assembly);
+            }
+            catch (Exception ex)
+            {
+                mls.LogError("[TerminalCursor] failed to patch TMP_InputField: " + ex);
+            }
         }
 
 
@@ -156,10 +171,7 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
         internal static void Tick()
         {
             if (currentTerminal == null || !currentTerminal.terminalInUse) return;
-
             KeepCaretAtEnd(currentTerminal);
-
-            // --- hover / click handling ---
             HandleMouse(currentTerminal);
         }
 
@@ -183,6 +195,32 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 f.stringPosition = len;
                 f.selectionStringFocusPosition = len;
             }
+        }
+
+        // ===== ФИКС МИГАНИЯ: гармонично пиним каретку в конец при каждом рендере. =====
+        // Вызывается из Harmony-патча Patch_OnFillVBO.Prefix (LatePreRender), когда
+        // textInfo гарантированно актуален.
+        internal static void PinCaretToEnd(TMP_InputField f)
+        {
+            if (currentTerminal == null || !currentTerminal.terminalInUse) return;
+            if (f == null || !ReferenceEquals(f, currentTerminal.screenText)) return;
+            TMP_TextInfo ti = f.textComponent != null ? f.textComponent.textInfo : null;
+            if (ti == null) return;
+
+            int cc = ti.characterCount;
+            int len = f.text != null ? f.text.Length : 0;
+            int caret = cc > 0 ? cc - 1 : 0;
+
+            // Устанавливаем позиции напрямую через рефлексию, минуя сеттеры
+            // (которые делают пересчёт "строка <-> textInfo" по устаревшему textInfo).
+            CaretAccess.Set(CaretAccess.strPos, f, len);
+            CaretAccess.Set(CaretAccess.strSelPos, f, len);
+            CaretAccess.Set(CaretAccess.carPos, f, caret);
+            CaretAccess.Set(CaretAccess.carSelPos, f, caret);
+            // Снимаем флаги пересчёта — не даём OnFillVBO перезаписать позиции
+            // из caret-индекса по устаревшему textInfo.
+            CaretAccess.SetB(CaretAccess.strDirty, f, false);
+            CaretAccess.SetB(CaretAccess.carDirty, f, false);
         }
 
         static Camera GetCam(TMP_Text tc)
@@ -463,5 +501,69 @@ UpdateClickableCache(t);
         {
             TerminalCursorPlugin.Tick();
         }
+    }
+
+    // =====================================================================
+    //  Доступ к приватным полям TMP_InputField, отвечающим за каретку и
+    //  выделение. Нужен потому, что публичные сеттеры (caretPosition /
+    //  stringPosition) пересчитывают "строковый индекс <-> индекс в textInfo"
+    //  через textInfo, который в момент вызова может быть устаревшим.
+    // =====================================================================
+    internal static class CaretAccess
+    {
+        internal static FieldInfo
+            strPos, strSelPos,  // m_StringPosition / m_StringSelectPosition (индекс в строке)
+            carPos, carSelPos,  // m_CaretPosition / m_CaretSelectPosition (индекс в textInfo)
+            strDirty, carDirty; // флаги пересчёта позиций
+
+        internal static void Init()
+        {
+            var t = typeof(TMP_InputField);
+            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic;
+            strPos = t.GetField("m_StringPosition", F);
+            strSelPos = t.GetField("m_StringSelectPosition", F);
+            carPos = t.GetField("m_CaretPosition", F);
+            carSelPos = t.GetField("m_CaretSelectPosition", F);
+            strDirty = t.GetField("m_IsStringPositionDirty", F);
+            carDirty = t.GetField("m_IsCaretPositionDirty", F);
+        }
+
+        internal static void Set(FieldInfo f, TMP_InputField x, int v) { if (f != null) f.SetValue(x, v); }
+        internal static void SetB(FieldInfo f, TMP_InputField x, bool v) { if (f != null) f.SetValue(x, v); }
+    }
+
+    // =====================================================================
+    //  ФИКС МИГАНИЯ КАРЕТКИ.
+    //
+    //  Terminal.Update каждый кадр выполняет screenText.caretPosition =
+    //  text.Length, хотя caretPosition - это ИНДЕКС В textInfo, а не позиция в
+    //  строке. Сеттер клампит полученное число до textInfo.characterCount - 1 и
+    //  поднимает m_IsStringPositionDirty. В кадре, где текст узла уже заменён,
+    //  а меш TMP ещё не перестроен, characterCount относится к ПРЕЖНЕЙ
+    //  раскладке - кламп даёт середину нового текста, и OnFillVBO пересчитывает
+    //  из этого caret-индекса строковую позицию, затирая позицию конца. Итог:
+    //  один кадр каретка рисуется в случайном месте текста (в этот же кадр
+    //  ломается ввод букв).
+    //
+    //  Замер подтвердил (cc = textInfo.characterCount, cp = m_CaretPosition):
+    //      fill cc=157 sp=268 cp=156   -> текст уже новый (268), раскладка старая
+    //      fill cc=269 sp=156 cp=156   -> раскладка новая, каретка в середине
+    //  после фикса:
+    //      fill cc=157 sp=268 cp=156
+    //      fill cc=269 sp=268 cp=268   -> cp == cc-1, каретка в конце
+    //
+    //  OnFillVBO - единственная точка, где textInfo гарантированно актуален:
+    //  TMP_Text перестраивает меш на CanvasUpdate.PreRender, а геометрия
+    //  каретки строится позже, на LatePreRender. Поэтому ставим позиции конца
+    //  здесь и снимаем флаги пересчёта, чтобы они не были перезатёрты.
+    //
+    //  Ограничение каретки концом совпадает с ванильным поведением:
+    //  Terminal.Update и так каждый кадр возвращает её в конец, так что ручное
+    //  позиционирование каретки в терминале не работает и без нас.
+    // =====================================================================
+    [HarmonyPatch(typeof(TMP_InputField), "OnFillVBO")]
+    internal static class Patch_OnFillVBO
+    {
+        static void Prefix(TMP_InputField __instance) => TerminalCursorPlugin.PinCaretToEnd(__instance);
     }
 }
