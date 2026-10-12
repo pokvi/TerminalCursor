@@ -1,0 +1,205 @@
+========================================================================
+ LETHAL COMPANY — TerminalCursor. РЕАЛЬНЫЕ ПУТИ (проверено на машине)
+========================================================================
+
+ЧТО ЭТО: BepInEx-мод, который показывает курсор мыши, пока игрок в терминале.
+  Весь код мода: TerminalCursor\Plugin.cs
+  Хукает: On.Terminal.BeginUsingTerminal / On.Terminal.QuitTerminal /
+          On.GameNetcodeStuff.PlayerControllerB.KillPlayer
+  При входе в терминал: Cursor.lockState = None, Cursor.visible = true,
+                        localPlayerController.disableLookInput = true.
+  При выходе/смерти: восстанавливает прежнее состояние курсора и look input.
+
+ ------------------------------------------------------------------------
+  ДВА РАЗНЫХ РЕПО — НЕ ПУТАТЬ
+ ------------------------------------------------------------------------
+1) ЭТОТ РЕПО = САМ МОД (здесь и только здесь менять код TerminalCursor):
+   D:\.code\pokvi_code\LethalCompany_TerminalCursor\
+     TerminalCursor\
+       Plugin.cs              <- ВЕСЬ код мода (единственный .cs)
+       TerminalCursor.csproj   <- конфиг сборки (пути к DLL игры)
+       NuGet.Config
+     test.bat                 <- ОДИН СПОСОБ тестировать мод (см. ниже)
+     TerminalCursor.sln
+     publish\                 <- сюда PostBuild копирует готовый dll
+   ВНИМАНИЕ: файла AutoStart.cs здесь БОЛЬШЕ НЕТ (удалён). Авто-хост лобби
+   и авто-открытие терминала в этом репо НЕ живут. См. пункт 2.
+
+2) ОТДЕЛЬНЫЙ РЕПО = ТЕСТОВАЯ ОБВЯЗКА (не мод, не часть продукта):
+   D:\.code\pokvi_code\LethalCompany_AutoStart\
+     AutoStart\AutoStartPlugin.cs    <- плагин TerminalCursorAutoStart
+     test.bat                        <- прогон обвязки (без аргументов)
+     manual.txt                      <- ВСЯ инфа про авто-запуск игры
+     restore_plugins.bat
+   Обвязка сама, без человека и без нажатий клавиш, проходит:
+     экран LAUNCH MODE -> выбор LAN -> хостинг лобби -> загрузка карты ->
+     открытие терминала (игра сама подводит игрока к терминалу и наводит
+     камеру на его экран через InteractTrigger.Interact()).
+   => для тестов TerminalCursor она даёт готовую игру "сижу в терминале".
+   Подробности (поток запуска, грабли) - в ЕЁ manual.txt. Код этой обвязки
+   ИЗ ЭТОГО РЕПО НЕ ТРОГАТЬ: это отдельный продукт.
+
+ИГРА (Lethal Company):
+  D:\steam\steamapps\common\Lethal Company\
+    Lethal Company.exe                <- запускать только через test.bat
+    Lethal Company_Data\Managed\          <- игровые DLL для сборки
+      Assembly-CSharp.dll
+      Unity.Netcode.Runtime.dll
+      Unity.Netcode.Components.dll
+      Unity.Networking.Transport.dll
+      Unity.InputSystem.dll
+      UnityEngine.CoreModule.dll
+      Facepunch.Steamworks.Win64.dll
+    BepInEx\plugins\                      <- сюда кладётся TerminalCursor.dll
+      MMHOOK\                             <- MMHOOK_*.dll (нужны для сборки)
+      TerminalCursor\TerminalCursor.dll     <- куда легит наша сборка
+      TerminalCursorAutoStart\              <- тестовая обвязка (пункт 2)
+    BepInEx\LogOutput.log                 <- лог BepInEx и всех модов
+    AutoStart_log.txt                     <- лог обвязки (его пишет AutoStart)
+  ПРИМЕЧАНИЕ: сейчас моды в игре УРЕЗАНЫ до минимума (MMHOOK + TerminalCursor
+  + AutoStart), чтобы не было шума и помех в UI. Полный бэкап лежит в
+  BepInEx\plugins.FULL, вернуть всё - D:\.code\pokvi_code\LethalCompany_AutoStart\restore_plugins.bat.
+
+Юзер-данные игры (Second Lyfe / текущая сборка):
+  %USERPROFILE%\AppData\LocalLow\ZeekerssRBLX\Lethal Company\Player.log
+
+ ------------------------------------------------------------------------
+  ПРОБЛЕМА HEAD (из-за которой всё ломалось)
+------------------------------------------------------------------------
+csproj в HEAD был чужой (автор figaR), пути захардкожены под его машину:
+  C:\Users\figaR\...                    <- нет на этой машине
+  C:\Program Files (x86)\Steam\...      <- игра реально в D:\steam\
+  ..\..\Assembly-CSharp-nstrip.dll      <- такого файла нет
+Поэтому HEAD не собирался. Сейчас csproj починен: пути идут из переменных
+GameDir / ManagedDir / MMHOOKDir / PluginDir внутри csproj.
+
+ ------------------------------------------------------------------------
+  ТЕСТЫ / ЗАПУСК ИГРЫ — ТОЛЬКО ЧЕРЕЗ test.bat (инструкция для AI-агента)
+------------------------------------------------------------------------
+AI-агент обязан проверять мод ИСКЛЮЧИТЕЛЬНО запуском test.bat из корня
+репозитория. НЕ запускать игру вручную, НЕ писать свои .ps1/.py для
+запуска игры, НЕ читать логи по кусочкам своими командами.
+
+cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
+./test.bat
+без ковычек
+./ обязательно для powershell (обратный слэш тоже годится)
+Аргументов НЕТ: длительность прогона задаётся переменной WAIT в самом test.bat
+(сейчас 30 - ровно как в батнике обвязки LethalCompany_AutoStart).
+ЗАПРЕЩЕНО менять значение WAIT - пользователь лучше знает, сколько нужно, и
+сам будет менять его как считает нужным.
+
+ВАЖНО про этот прогон:
+  - test.bat собирает и деплоит ТОЛЬКО TerminalCursor.dll. Обвязку
+    (TerminalCursorAutoStart.dll) он НЕ собирает - она должна уже лежать в
+    BepInEx\plugins\TerminalCursorAutoStart\ (сейчас лежит).
+  - Если менял код ОБВЯЗКИ - сначала прогони ЕЁ test.bat из репо
+    LethalCompany_AutoStart (он пересобирает и деплоит AutoStart).
+  - Во время прогона обвязка САМА доводит игру до терминала: экран LAUNCH
+    MODE -> LAN -> хост -> карта -> открытие терминала. Это занимает ~20-25 с
+    (загрузка карты ~10-15 с). Давай WAIT с запасом (90 по умолчанию хватает).
+  - В конце test.bat печатает и AutoStart_log.txt - по нему видно, дошла ли
+    обвязка до открытия терминала ("OK: терминал открыт").
+  - Готовый прогон = игра стоит с ОТКРЫТЫМ И ВИДИМЫМ терминалом, можно
+    смотреть поведение курсора (то, ради чего TerminalCursor и нужен).
+
+Батник делает весь цикл сам:
+  1. убивает запущенную игру (иначе dll в папке модов залочена и не
+     перезапишется — на этом спотыкались уже дважды)
+  2. dotnet build -c Release: при ЛЮБОЙ ошибке компиляции сразу выход с
+     кодом 1, игру не трогает, плагин не перезаписывает
+  3. кладёт свежий TerminalCursor.dll в BepInEx\plugins\TerminalCursor\
+     (сверка по hash; если залочено — переименовывает старый и пишет
+     новый; не вышло — выход с кодом 2, дальше ничего не проверяем)
+  4. удаляет старые логи и запускает игру со своим -logFile
+  5. ждёт N секунд; если игра умерла раньше — это краш, пишет об этом
+  6. УБИВАЕТ игру и сам печатает: строки мода и ошибки из LogOutput.log,
+     строки мода из Player.log и последние 30 строк Player.log
+
+Коды возврата: 0 = прогон состоялся, 1 = ошибка сборки, 2 = dll не легла.
+Полные копии логов после прогона лежат в подпапке terminalCursor_test
+внутри %TEMP% (LogOutput.last.log и Player.log).
+
+ ------------------------------------------------------------------------
+  ПРАВИЛА, ЧТОБЫ НЕ ПЛОДИТЬ МУСОР
+------------------------------------------------------------------------
+1. НЕ создавать временные файлы (.ps1, .py, .txt, *_tmp, probe_*) в репо.
+   Для проверки API игры читать DLL точечно, не писать скрипты-разведчики.
+2. НЕ декомпилировать игру целиком и не складывать дампы в репо.
+3. НЕ менять Plugin.cs, пока csproj не собирается зелёным.
+4. Перед правкой файла: git diff. После: dotnet build -c Release (смотреть
+   только последние строки, не лог целиком).
+5. Один логический шаг = один коммит. Не коммитить временные файлы.
+6. НЕ писать в BepInEx\plugins\ исходники — только готовый .dll.
+7. Реальные изменения ВНЕ репо (папка игры, отключение чужих модов) —
+   только сказав пользователю, что именно и зачем, и обратимо.
+8. НЕ трогать код репо LethalCompany_AutoStart (тестовая обвязка) - это
+   отдельный продукт. Если обвязка мешает тестам TerminalCursor, сказать
+   пользователю, а не править её молча.
+9. Авто-запуск игры (хост + терминал) - это НЕ задача TerminalCursor.
+   TerminalCursor должен работать при штатном входе игрока в терминал;
+   обвязка лишь избавляет от ручных действий.
+10. test.bat ОБЯЗАН быть с переводами строк CRLF. Если правишь его
+    инструментом, который пишет LF, cmd.exe ломается с "The system cannot
+    find the batch label specified - loop" (в батнике есть :loop/:wait_done).
+    Оба test.bat (этот и в LethalCompany_AutoStart) держим с одинаковой
+    структурой: WAIT - простая переменная `set "WAIT=30"` без аргументов.
+
+ ------------------------------------------------------------------------
+  СБОРКА / ДЕПЛОЙ (руками, если test.bat не нужен целиком)
+------------------------------------------------------------------------
+   cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
+   dotnet build -c Release
+   copy TerminalCursor\bin\Release\netstandard2.1\TerminalCursor.dll `
+     "D:\steam\steamapps\common\Lethal Company\BepInEx\plugins\TerminalCursor\"
+
+ ------------------------------------------------------------------------
+  API ИГРЫ, ПРОВЕРЕНОЕ НА ТЕКУЩЕЙ СБОРКЕ (Assembly-CSharp.dll)
+------------------------------------------------------------------------
+  ЕСТЬ:  GameNetworkManager, StartHost, StartOfRound, Terminal,
+         GameNetcodeStuff.PlayerControllerB, CauseOfDeath, HUD, GameStats
+  НЕТ:   MenuScene, Mirror (влит в Assembly-CSharp), StartSinglePlayerGame
+  Сигнатуры (проверены рефлексией, старше — не совпадали):
+         Terminal.QuitTerminal(bool syncTerminalInUse)
+         PlayerControllerB.KillPlayer(Vector3, bool, CauseOfDeath, int,
+                                      Vector3 positionOffset, bool setOverrideDropItems)
+  => авто-хост: рефлексия на GameNetworkManager.StartHost
+  => авто-терминал: через Terminal (как в Plugin.cs)
+
+ ------------------------------------------------------------------------
+  АВТО-ЗАПУСК ИГРЫ — РЕШЕНО (что было и почему не здесь)
+ ------------------------------------------------------------------------
+Раньше в этом репо был AutoStart.cs, который пытался "нажимать клавиши"
+(down/enter/esc) для прохода меню и создания лобби. Это ТУПИКОВЫЙ путь:
+  - Unity New Input System не видит keybd_event/SendInput со скан-кодами;
+  - нужен фокус окна; хрупко.
+Рабочее решение - отдельный плагин (репо LethalCompany_AutoStart), который
+ходит через ПРЯМЫЕ вызовы игрового API, без клавиш:
+  - экран LAUNCH MODE: PreInitSceneScript.ChooseLaunchOption(online:false)
+    => грузится сцена "InitSceneLANMode" (там disableSteam=true, это и есть LAN);
+  - меню: GameNetworkManager.StartHost();
+  - терминал: Terminal.GetComponent<InteractTrigger>().Interact(player.transform)
+    - это ШТАТНЫЙ вход игрока. При specialCharacterAnimation=true он зовёт
+      BeginUsingTerminal() и подводит+доворачивает игрока к монитору.
+      Прямой BeginUsingTerminal() поднимает terminalInUse, но экран терминала
+      НЕ видно: это World Space Canvas на мониторе корабля, а игрок стоит
+      в стороне и на него не смотрит.
+Проверено: игра доходит до открытого И ВИДИМОГО терминала без человека.
+
+ ------------------------------------------------------------------------
+  КОНТЕКСТ ДЛЯ РАБОТЫ НАД КУРСОРОМ (факты этого прогона)
+ ------------------------------------------------------------------------
+  - Хук On.Terminal.BeginUsingTerminal в Plugin.cs СРАБАТЫВАЕТ при входе в
+    терминал (в Player.log: "[TerminalCursor] --- Terminal usage started
+    explicitly by system hook. ---").
+  - Терминал открывается в сцене "SampleSceneRelay" (корабль), скрипт
+    терминала называется 'TerminalScript'.
+  - Наблюдаемый шум в логе при открытии терминала (НЕ фатально, курсор не
+    ломает):
+      [Error : Unity Log] Trying to add Caret (TMPro.TMP_SelectionCaret) for
+      graphic rebuild while we are already inside a graphic rebuild loop.
+    Это варнинг TMP про каретку input-поля терминала, создаваемую во время
+    перестройки канваса. Проверить, связан ли он с нашим кодом или с самой
+    игрой, если будет время.
+  - ЦЕЛЬ мода: курсор видим и НЕ блокируется, пока игрок в терминале, и
+    корректно возвращается при выходе (QuitTerminal) и смерти (KillPlayer).

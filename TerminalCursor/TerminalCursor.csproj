@@ -28,7 +28,7 @@
         <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.2" PrivateAssets="all" />
     </ItemGroup>
 
-    <!-- Игровые DLL (только то, что реально нужно Plugin.cs + AutoStart.cs) -->
+    <!-- Игровые DLL (только то, что реально нужно Plugin.cs) -->
     <ItemGroup>
         <Reference Include="Assembly-CSharp">
             <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
@@ -60,6 +60,16 @@
         </Reference>
         <Reference Include="Facepunch.Steamworks.Win64">
             <HintPath>$(ManagedDir)\Facepunch.Steamworks.Win64.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <!-- TextMeshPro (типы TMPro.*) и UI (TMP_InputField живёт в Unity.TextMeshPro,
+             Scrollbar/RectMask2D - в UnityEngine.UI) -->
+        <Reference Include="Unity.TextMeshPro">
+            <HintPath>$(ManagedDir)\Unity.TextMeshPro.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
+        <Reference Include="UnityEngine.UI">
+            <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
             <Private>false</Private>
         </Reference>
     </ItemGroup>
