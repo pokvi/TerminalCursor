@@ -57,8 +57,9 @@ namespace TerminalCursor
             mls = base.Logger;
 
 
-            On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
+On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
             On.Terminal.QuitTerminal += Terminal_QuitTerminal;
+            On.Terminal.OnSubmit += Terminal_OnSubmit;
             On.GameNetcodeStuff.PlayerControllerB.KillPlayer += PlayerControllerB_KillPlayer;
 
             mls.LogInfo($"Plugin {PluginInfo.PLUGIN_GUID} is loaded!");
@@ -68,6 +69,18 @@ namespace TerminalCursor
 
         private void Terminal_BeginUsingTerminal(On.Terminal.orig_BeginUsingTerminal orig, Terminal self)
         {
+            // ОТКЛЮЧАЕМ SelectAll() при активации поля.
+            // Игра в ActivateInputFieldInternal() -> OnFocus() -> SelectAll()
+            // создаёт выделение (stringPosition=text.Length, stringSelectPosition=0),
+            // которое рендерится как подсветка символов (GenerateHightlight).
+            // KeepCaretAtEnd убирает его в Update(), но LateUpdate() -> SelectAll()
+            // пересоздаёт -> цикл "мигания". Отключаем навсегда (persistent на
+            // одном экземпляре TMP_InputField).
+            if (self != null && self.screenText != null)
+            {
+                self.screenText.onFocusSelectAll = false;
+            }
+
             orig(self);
             mls.LogWarning("[TerminalCursor] --- Terminal usage started explicitly by system hook. ---");
             locked = Cursor.lockState;
@@ -88,9 +101,15 @@ currentTerminal = self;
             cachedNodeKey = null;
             clickableKeys.Clear();
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear();
+// При повторном входе каретка остаётся с позиции прошлой сессии - на кадр
+            // мелькает в случайном месте. Ставим строковую позицию в конец (сеттер
+            // поднимает m_IsCaretPositionDirty - каретка уедет в конец в первом же
+            // Rebuild) и обновляем label синхронно.
+            self.screenText.stringPosition = self.screenText.text.Length;
+            self.screenText.ForceLabelUpdate();
             EnsureRunner();
         }
-        private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal self, bool syncTerminalInUse)
+private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal self, bool syncTerminalInUse)
         {
             orig(self, syncTerminalInUse);
             currentTerminal = null;
@@ -102,6 +121,20 @@ currentTerminal = self;
             {
                 StartOfRound.Instance.localPlayerController.disableLookInput = false;
             }
+        }
+
+// После ЛЮБОГО сабмита (клик по команде или ручной Enter) текст узла
+        // уже заменён, а каретка input-поля остаётся в позиции старого текста -
+        // на один кадр она мелькает в случайном месте, пока игра не переактивирует
+        // поле. Ставим строковую позицию в конец: сеттер поднимает
+        // m_IsCaretPositionDirty, и в первом же Rebuild каретка перескочит в конец
+        // (MoveTextEnd не годится - он крутит caret-индексы по устаревшему textInfo).
+        private void Terminal_OnSubmit(On.Terminal.orig_OnSubmit orig, Terminal self)
+        {
+            orig(self);
+            if (self == null || self.screenText == null || !self.terminalInUse) return;
+            self.screenText.stringPosition = self.screenText.text.Length;
+            self.screenText.ForceLabelUpdate();
         }
         private void PlayerControllerB_KillPlayer(On.GameNetcodeStuff.PlayerControllerB.orig_KillPlayer orig, GameNetcodeStuff.PlayerControllerB self, Vector3 bodyVelocity, bool spawnBody, CauseOfDeath causeOfDeath, int deathAnimation, Vector3 positionOffset, bool setOverrideDropItems)
         {
@@ -117,15 +150,39 @@ currentTerminal = self;
             }
         }
 
-        // ====================================================================
+// ====================================================================
         //  Per-frame logic (driven by our own runner object)
         // ====================================================================
         internal static void Tick()
         {
             if (currentTerminal == null || !currentTerminal.terminalInUse) return;
 
+            KeepCaretAtEnd(currentTerminal);
+
             // --- hover / click handling ---
             HandleMouse(currentTerminal);
+        }
+
+        // Держим каретку input-поля в КОНЦЕ текста каждый кадр, пока терминал
+        // открыт. Иначе после смены узла (LoadNewNode) или повторного входа
+        // TMP_InputField оставляет строковую позицию от старого текста: каретка
+        // мелькает в случайном месте и портит ввод (буквы вставляются не туда /
+        // игнорируются). В ваниле позиция всегда в конце - для кликов и вставки
+        // команд это ровно то, что нужно (в т.ч. спидраннерам).
+        static void KeepCaretAtEnd(Terminal t)
+        {
+            TMP_InputField f = t.screenText;
+            if (f == null || !f.isFocused) return;
+            // stringPosition (getter = stringSelectPositionInternal) и selectionStringFocusPosition
+            // (setter = stringSelectPositionInternal) работают в СТРОКОВЫХ индексах.
+            // selectionFocusPosition — это CARET-индекс (в textInfo), его нельзя
+            // сравнивать с text.Length.
+            int len = f.text.Length;
+            if (f.stringPosition != len || f.selectionStringFocusPosition != len)
+            {
+                f.stringPosition = len;
+                f.selectionStringFocusPosition = len;
+            }
         }
 
         static Camera GetCam(TMP_Text tc)
@@ -260,17 +317,28 @@ currentTerminal = self;
             tc.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
         }
 
-        // Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
+// Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
         static void ExecuteCommand(Terminal t, string key)
         {
             if (t.screenText == null || string.IsNullOrEmpty(key)) return;
             string baseText = t.currentText ?? t.screenText.text;
             string newText = baseText + key;
+            // На кадр подстановки гасим поле: каретка не рисуется вообще, а игра
+            // в конце OnSubmit сама переактивирует поле уже на новом тексте
+            // (ActivateInputField стоит последней строкой в OnSubmit).
+            bool wasActive = t.screenText.isFocused;
+            if (wasActive) t.screenText.DeactivateInputField();
             t.screenText.text = newText;   // TextChanged сам поднимет textAdded на разницу длин
             // страховка, если onValueChanged не сработал (modifyingText и пр.)
             t.currentText = newText;
             t.textAdded = key.Length;
-t.OnSubmit();
+            t.OnSubmit();
+// страховка каретки, если поле не был активно и игра её не переактивировала
+            if (!wasActive)
+            {
+                t.screenText.stringPosition = t.screenText.text.Length;
+                t.screenText.ForceLabelUpdate();
+            }
             // узел сменился: сбрасываем кэш раскладки, чтобы пересобрать на след. кадре
             lastText = null;
             lastCharCount = -1;
@@ -396,4 +464,4 @@ UpdateClickableCache(t);
             TerminalCursorPlugin.Tick();
         }
     }
-    }
+}
