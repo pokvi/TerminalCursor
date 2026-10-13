@@ -34,12 +34,8 @@ namespace TerminalCursor
         static readonly List<bool> cmdCanonical = new List<bool>(); // заголовки '>X' / "X"
         static readonly List<string> cmdKeys = new List<string>(); // сырой ключ для ExecuteCommand
 
-        // Нормализованные → сырые ключи: normalize("inverse teleporter") → "inverse teleporter"
+        // Нормализованные → сырые ключи
         static readonly Dictionary<string, string> keyMap = new Dictionary<string, string>();
-        static readonly HashSet<string> clickableKeys = new HashSet<string>();
-
-        // Нормализованные display-имена товаров (из текста): "stun grenade", "signal translator"
-        static readonly HashSet<string> displayNames = new HashSet<string>();
 
         // Кэш узла: пересборка при смене терминального узла
         static string cachedNodeKey;
@@ -120,7 +116,7 @@ currentTerminal = self;
             lastVisLines = -1;
             hoverStart = hoverEnd = -1;
             cachedNodeKey = null;
-            clickableKeys.Clear(); keyMap.Clear(); displayNames.Clear();
+            keyMap.Clear();
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
 // При повторном входе каретка остаётся с позиции прошлой сессии - на кадр
             // мелькает в случайном месте. Ставим строковую позицию в конец (сеттер
@@ -298,11 +294,13 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
         // а не его нормализацию: "inverseteleporter" игра не находит как
         // точную фразу и скатывается к "teleporter" (другой товар!).
         //
-        // Приоритет диапазонов (длинное раньше короткого, иначе дедуп
-        // отрежет длинное):
-        //  0. display-имя из строки "... // Price:" - покрывает всё имя товара
-        //  1. точное совпадение токена с ключом
-        //  2. сегмент токена с дефисом (TZP-Inhalant -> tzp) - покрывает ВЕСЬ токен
+        // Приоритет: для каждой позиции слова берётся САМОЕ ДЛИННОЕ совпадение
+        // с ключом (1-3 слова). Ключи игры бывают с пробелом ("zap gun",
+        // "inverse teleporter", "extension ladder", "hoarding bugs") и с дефисом
+        // ("walkie-talkie"). Кладём ключ в keyMap под НОРМАЛИЗОВАННОЙ формой
+        // (пробел удалён: "zap gun" -> "zapgun"), а храним СЫРУЮ - её шлём в
+        // парсер. Тогда слова экрана "zap"+"gun" дают "zapgun" -> сырой "zap gun".
+        // Дедуп в AddRange не даёт короткому совпадению вытеснить длинное.
         static bool AddRange(int s, int e, string key, bool canonical)
         {
             for (int r = 0; r < cmdStarts.Count; r++)
@@ -311,51 +309,10 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             return true;
         }
 
-        // Display-имена товаров прямо из текста: строки "<имя>  //  Price: ...".
-        static void ParseDisplayNames(string text)
-        {
-            displayNames.Clear();
-            if (string.IsNullOrEmpty(text)) return;
-            int pos = 0;
-            while (pos < text.Length)
-            {
-                int nl = text.IndexOf('\n', pos);
-                if (nl < 0) nl = text.Length;
-                string line = text.Substring(pos, nl - pos);
-                pos = nl + 1;
-
-                int sl = line.IndexOf("//", StringComparison.Ordinal);
-                if (sl <= 0) continue;
-                if (!line.Substring(sl + 2).TrimStart().StartsWith("Price:", StringComparison.OrdinalIgnoreCase)) continue;
-
-                string name = line.Substring(0, sl).Trim();
-                if (name.Length > 0 && name[0] == '*') name = name.Substring(1).Trim();
-                string norm = Normalize(name);
-                if (norm.Length > 1) displayNames.Add(norm);
-            }
-        }
-
-        // Разрешаем display-имя в СЫРОЙ ключ: точное совпадение, иначе самый
-        // длинный ключ-префикс ("stungrenade" -> "stun", "signaltranslator" -> "signal").
-        static string ResolveDisplayKey(string normName)
-        {
-            string raw;
-            if (keyMap.TryGetValue(normName, out raw)) return raw;
-            string best = null, bestRaw = null;
-            foreach (KeyValuePair<string, string> kv in keyMap)
-            {
-                if (kv.Key.Length < 3 || kv.Key.Length >= normName.Length) continue;
-                if (!normName.StartsWith(kv.Key, StringComparison.Ordinal)) continue;
-                if (best == null || kv.Key.Length > best.Length) { best = kv.Key; bestRaw = kv.Value; }
-            }
-            return bestRaw;
-        }
-
         static void BuildCommandRanges(TMP_Text tc)
         {
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
             TMP_TextInfo ti = tc.textInfo;
-            ParseDisplayNames(tc.text);
 
             var words = new List<(int s, int e, string key)>();
             int i = 0;
@@ -370,36 +327,28 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 words.Add((s, e, key));
             }
 
-            // 0. Display-имена (до 4 слов в одной строке), берём самое длинное.
+            // 1. Совпадение на 1-3 слова подряд (в пределах одной строки).
+            //    Берём самое длинное: "inverse teleporter" важнее "teleporter".
+            var sb = new StringBuilder();
             for (int w = 0; w < words.Count; w++)
             {
-                var sb = new StringBuilder();
+                sb.Clear();
                 int bestEnd = -1; string bestKey = null;
-                for (int k = w; k < words.Count && k <= w + 3; k++)
+                for (int k = w; k < words.Count && k <= w + 2; k++)
                 {
                     if (k > w && ti.characterInfo[words[k - 1].e].lineNumber != ti.characterInfo[words[k].s].lineNumber) break;
                     sb.Append(words[k].key);
-                    string norm = sb.ToString();
-                    if (!displayNames.Contains(norm)) continue;
-                    string rawKey = ResolveDisplayKey(norm);
-                    if (rawKey == null) continue;
-                    bestEnd = words[k].e; bestKey = rawKey;
+                    string raw;
+                    if (!keyMap.TryGetValue(sb.ToString(), out raw)) continue;
+                    bestEnd = words[k].e; bestKey = raw;
                 }
                 if (bestKey == null) continue;
                 char prev = FindPrevVisibleChar(ti, words[w].s);
                 AddRange(words[w].s, bestEnd, bestKey, prev == '>' || prev == '"');
             }
 
-            // 1. Точное совпадение токена с ключом.
-            for (int w = 0; w < words.Count; w++)
-            {
-                string raw;
-                if (!keyMap.TryGetValue(words[w].key, out raw)) continue;
-                char prev = FindPrevVisibleChar(ti, words[w].s);
-                AddRange(words[w].s, words[w].e, raw, prev == '>' || prev == '"');
-            }
-
-            // 2. Сегменты дефисного токена: подсвечиваем ВЕСЬ токен, а не сегмент.
+            // 2. Дефисный токен целиком: "TZP-Inhalant" -> сегмент "tzp" -> ключ "tzp",
+            //    но подсвечиваем ВЕСЬ токен (пользователь кликает по любой букве).
             for (int w = 0; w < words.Count; w++)
             {
                 string text = BuildWord(ti, words[w].s, words[w].e);
@@ -560,14 +509,14 @@ UpdateClickableCache(t);
             if (clickedKey != null) ExecuteCommand(t, clickedKey);
         }
 
-        // Кэш кликабельных слов: пересобираем при смене узла терминала.
+        // Кэш ключей: пересобираем при смене узла терминала.
         static void UpdateClickableCache(Terminal t)
         {
             TerminalNode cn = t.currentNode;
             string nodeKey = cn != null ? cn.name : "<null>";
             if (nodeKey == cachedNodeKey) return;
             cachedNodeKey = nodeKey;
-            clickableKeys.Clear();
+            keyMap.Clear();
 
             if (cn != null)
             {
@@ -600,7 +549,6 @@ UpdateClickableCache(t);
         {
             string norm = Normalize(word);
             if (norm.Length == 0) return;
-            clickableKeys.Add(norm);
             string old;
             if (keyMap.TryGetValue(norm, out old))
             {

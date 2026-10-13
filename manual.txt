@@ -235,24 +235,28 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     Сырые ключи игры: "zap gun", "inverse teleporter", "extension ladder",
     "loud horn", "weed killer", "belt bag", "spray paint", "pro flashlight",
     "green suit" — все СОДЕРЖАТ ПРОБЕЛЫ. И "walkie-talkie" — С ДЕФИСОМ.
-    Normalize() раньше уничтожал пробелы и дефисы, поэтому ExecuteCommand
-    слал "inverseteleporter" — CheckForExactSentences не находит точного
-    совпадения, скатывается к ParseWord → находит "teleporter" → покупает
-    обычный телепортер за 375 вместо инверсного за 425.
-    BuildCommandRanges теперь в 3 прохода:
-      0. Display-имена из строк "... // Price:" (самый длинный совпавший
-         span, resolve raw key: точное совпадение в keyMap или longest prefix)
-         — покрывает ВЕСЬ товар целиком: "Inverse Teleporter",
-           "Stun grenade", "Signal Translator", "Zap gun", "Zap gun" и т.д.
-      1. Точное совпадение токена с ключом (Walkie-talkie, Teleporter, Shovel)
-      2. Сегмент дефисного токена, но подсветка ВЕСЬ токен (TZP-Inhalant → "tzp")
-    AddRange дедупирует пересечения: длинный диапазон добавляется первым,
-    короткий — отбрасывается. Поэтому "Inverse Teleporter" побеждает
-    "Teleporter", а не наоборот.
-    ExecuteCommand отправляет СЫРОЙ ключ (с пробелом): "inverse teleporter"
-    → CheckForExactSentences точное совпадение → InverseTeleporterBuy.
-    Для дефисных "walkie-talkie" → RemovePunctuation → "walkietalkie" →
-    ParseWord prefix "walkie" → "walkie-talkie" → тоже работает.
+    Normalize() уничтожал пробелы и дефисы, поэтому ExecuteCommand слал
+    "inverseteleporter" — CheckForExactSentences не находит точного совпадения,
+    скатывается к ParseWord → находит "teleporter" → покупает обычный
+    телепортер за 375 вместо инверсного за 425.
+    BuildCommandRanges теперь использует один проход N-грамм (1-3 слова)
+    плюс дефисные сегменты:
+      1. Для каждой позиции слова перебираю 1-3 соседних слова в одной строке,
+         собираю нормализованную N-грамму, ищу в keyMap.
+         keyMap["zapgun"]="zap gun" (нормализованная форма без пробелов,
+         но храню СЫРОЙ ключ с пробелом).
+         "Inverse Teleporter": N-грамма "inverseteleporter" → keyMap →
+         сырой "inverse teleporter" → ExecuteCommand отправляет с пробелом.
+         "Teleporter" (pass 1) отбрасывается дедупом из-за пересечения.
+      2. Дефисные токены: "TZP-Inhalant" → сегмент "tzp" → ключ "tzp",
+         но подсвечиваю ВЕСЬ токен (пользователь кликает по любой букве).
+    Дедуп в AddRange не даёт короткому совпадению вытеснить длинное,
+    потому что более длинный диапазон добавляется первым (w идёт по
+    возрастанию, и "inverse teleporter" обрабатывается раньше "teleporter").
+    Для совместимости с RTLC (переводом) — названия товаров на экране
+    остаются на английском, поэтому N-граммы совпадают с ключами игры.
+    Если какой-то мод переведёт названия товаров — ключи не совпадут,
+    но это редкий кейс (RTLC переводит только "Цена:", заголовки).
     Проверено в логах игры:
       click 'inverse teleporter' → noun keyword: inverse teleporter → InverseTeleporterBuy
       click 'teleporter'       → noun keyword: teleporter           → TeleporterBuy1
