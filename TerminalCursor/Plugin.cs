@@ -37,6 +37,10 @@ namespace TerminalCursor
         // Нормализованные → сырые ключи
         static readonly Dictionary<string, string> keyMap = new Dictionary<string, string>();
 
+        // Нормализованные display-имена товаров из текста (текст между "* " и "//").
+        // Строится один раз на узел, используется для N-граммного матчинга.
+        static readonly Dictionary<string, string> displayKeyMap = new Dictionary<string, string>();
+
         // Кэш узла: пересборка при смене терминального узла
         static string cachedNodeKey;
 
@@ -116,7 +120,7 @@ currentTerminal = self;
             lastVisLines = -1;
             hoverStart = hoverEnd = -1;
             cachedNodeKey = null;
-            keyMap.Clear();
+            keyMap.Clear(); displayKeyMap.Clear();
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
 // При повторном входе каретка остаётся с позиции прошлой сессии - на кадр
             // мелькает в случайном месте. Ставим строковую позицию в конец (сеттер
@@ -309,10 +313,59 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             return true;
         }
 
+        // Parse display-имена товаров из текста терминала.
+        // Формат: "* Название товара  //  Price: ¤X" или "* Название  //  Цена: ¤X".
+        // Разделитель "//" locale-independent.
+        static void ParseDisplayNames(string text)
+        {
+            displayKeyMap.Clear();
+            if (string.IsNullOrEmpty(text)) return;
+
+            // Парсим все строки, содержащие "//" (граница между названием и ценой)
+            int pos = 0, len = text.Length;
+            while (pos < len)
+            {
+                int nl = text.IndexOf('\n', pos);
+                if (nl < 0) nl = len;
+                string line = text.Substring(pos, nl - pos);
+                pos = nl + 1;
+
+                int sl = line.IndexOf("//", StringComparison.Ordinal);
+                if (sl <= 0) continue;
+
+                string name = line.Substring(0, sl).Trim();
+                if (name.Length > 0 && name[0] == '*') name = name.Substring(1).Trim();
+                if (name.Length == 0) continue;
+
+                string norm = Normalize(name);
+                if (norm.Length < 2) continue;
+
+                // Ищем ключ: сначала точное совпадение, иначе самый длинный ключ-префикс
+                string raw;
+                if (keyMap.TryGetValue(norm, out raw))
+                {
+                    displayKeyMap[norm] = raw;
+                }
+                else
+                {
+                    string best = null, bestRaw = null;
+                    foreach (var kv in keyMap)
+                    {
+                        if (kv.Key.Length < 3) continue;
+                        if (!norm.StartsWith(kv.Key, StringComparison.Ordinal)) continue;
+                        if (best == null || kv.Key.Length > best.Length)
+                        { best = kv.Key; bestRaw = kv.Value; }
+                    }
+                    if (best != null) displayKeyMap[norm] = bestRaw;
+                }
+            }
+        }
+
         static void BuildCommandRanges(TMP_Text tc)
         {
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
             TMP_TextInfo ti = tc.textInfo;
+            ParseDisplayNames(tc.text);
 
             var words = new List<(int s, int e, string key)>();
             int i = 0;
@@ -327,12 +380,32 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 words.Add((s, e, key));
             }
 
-            // 1. Совпадение на 1-3 слова подряд (в пределах одной строки).
-            //    Берём самое длинное: "inverse teleporter" важнее "teleporter".
-            var sb = new StringBuilder();
+            // 1. Display-имена из текста: "Stun grenade" -> keyMap["stungrenade"]="stun"
+            //    "Signal Translator" -> keyMap["signaltranslator"]="signal"
+            //    "Sofa chair" -> keyMap["sofachair"]="sofa"
+            //    Показываем ВЕСЬ товар целиком, а не только ключевое слово.
             for (int w = 0; w < words.Count; w++)
             {
-                sb.Clear();
+                var sb = new StringBuilder();
+                int bestEnd = -1; string bestKey = null;
+                for (int k = w; k < words.Count && k <= w + 3; k++)
+                {
+                    if (k > w && ti.characterInfo[words[k - 1].e].lineNumber != ti.characterInfo[words[k].s].lineNumber) break;
+                    sb.Append(words[k].key);
+                    string norm = sb.ToString();
+                    if (!displayKeyMap.TryGetValue(norm, out var raw)) continue;
+                    bestEnd = words[k].e; bestKey = raw;
+                }
+                if (bestKey == null) continue;
+                char prev = FindPrevVisibleChar(ti, words[w].s);
+                AddRange(words[w].s, bestEnd, bestKey, prev == '>' || prev == '"');
+            }
+
+            // 2. N-граммы 1-3 слова: "Zap gun" -> keyMap["zapgun"]="zap gun"
+            //    "Inverse Teleporter" -> keyMap["inverseteleporter"]="inverse teleporter"
+            for (int w = 0; w < words.Count; w++)
+            {
+                var sb = new StringBuilder();
                 int bestEnd = -1; string bestKey = null;
                 for (int k = w; k < words.Count && k <= w + 2; k++)
                 {
@@ -347,7 +420,7 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 AddRange(words[w].s, bestEnd, bestKey, prev == '>' || prev == '"');
             }
 
-            // 2. Дефисный токен целиком: "TZP-Inhalant" -> сегмент "tzp" -> ключ "tzp",
+            // 3. Дефисный токен целиком: "TZP-Inhalant" -> сегмент "tzp" -> ключ "tzp",
             //    но подсвечиваем ВЕСЬ токен (пользователь кликает по любой букве).
             for (int w = 0; w < words.Count; w++)
             {
