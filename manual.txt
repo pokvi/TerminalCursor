@@ -319,15 +319,28 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     Пример: ">VIEW MONITOR" в хелпе → подсвечивается целиком, клик отправляет
     "view monitor" → игра переключает камеру монитора.
 
-  - КОМАНДЫ SWITCH, PING, TRANSMIT, FLASH — НЕ ПОДСВЕЧИВАЮТСЯ.
-    Причина: они НЕ в allKeywords. Это хардкод в ParsePlayerSentence
-    (switch на array[0] — строки 1098-1133 декомпилированного Terminal.cs).
-    Все они требуют аргументы: switch [player], flash [radar], ping [radar],
-    transmit [message]. Клик без аргумента → ParserError. Оставляем как есть.
+  - SWITCH/PING/TRANSMIT/FLASH — РАЗБОР ПО ФАКТАМ ИЗ keyMap (286 ключей):
+    SWITCH: ЕСТЬ в allKeywords как noun keyword с specialKeywordResult.
+      Клик "switch" → CheckForExactSentences → specialKeywordResult →
+      узел "SwitchRadarCamPlayer 1" (страница с описанием и списком игроков).
+      Аргумент [имя игрока] опционален — без него показывает список.
+    EJECT: ЕСТЬ в allKeywords как noun keyword с specialKeywordResult.
+      Клик → катапультирование. Это ванильная команда.
+    FLASH: НЕТ в allKeywords. Только switch(array[0]) в ParsePlayerSentence.
+      Требует [имя радара]. Не кликабельна.
+    PING: НЕТ в allKeywords. Только switch(array[0]).
+      Требует [имя радара]. Не кликабельна.
+    TRANSMIT: НЕТ в allKeywords. Только switch(array[0]).
+      Требует [сообщение]. Не кликабельна.
+    VIEW MONITOR: verb+noun пара. Глагол "view" имеет compatibleNouns
+      со словом "monitor". Добавлен проход через compatibleNouns глаголов →
+      keyMap["viewmonitor"]="view monitor". N-грамма pass подхватывает.
+    Почему FLASH/EJECT "появились только с модами": EJECT ванильный keyword,
+      всегда был в allKeywords. Моды могли перестроить структуру узлов хелпа,
+      и теперь EJECT виден в разделе "Other commands". FLASH не keyword —
+      если он подсвечивался, это был ванильный зелёный цвет терминала,
+      а не подсветка мода (голубой).
 
-  - FLASH и EJECT — ванильные команды, не из модов. EJECT — keyword
-    TerminalKeyword с specialKeywordResult. FLASH — хардкод в ParsePlayerSentence.
-    Они есть в vanilla-терминале, в хелпе и при любом запуске.
 
 
 

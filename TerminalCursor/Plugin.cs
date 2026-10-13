@@ -612,8 +612,6 @@ UpdateClickableCache(t);
                 if (kw.isVerb)
                 {
                     // verb+noun пары: "view monitor", "inside cam" и т.д.
-                    // Игра парсит: ParseWord(verb) → verb keyword,
-                    // ParseWord(noun) → noun keyword → compatibleNouns[verb].result
                     if (kw.compatibleNouns != null)
                         foreach (var c in kw.compatibleNouns)
                             if (c != null && c.noun != null && c.result != null && !string.IsNullOrEmpty(c.noun.word))
