@@ -32,6 +32,7 @@ namespace TerminalCursor
         static readonly List<int> cmdStarts = new List<int>(); // границы всех командных слов
         static readonly List<int> cmdEnds = new List<int>();
         static readonly List<bool> cmdCanonical = new List<bool>(); // заголовки '>X' / "X"
+        static readonly List<string> cmdKeys = new List<string>(); // ключ для ExecuteCommand
 
         // Кэш кликабельных ключей текущего узла: строится один раз на узел,
         // чтобы per-frame проверка слов не перебирала все 155 ключей игры.
@@ -115,7 +116,7 @@ currentTerminal = self;
             hoverStart = hoverEnd = -1;
             cachedNodeKey = null;
             clickableKeys.Clear();
-            cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear();
+            cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
 // При повторном входе каретка остаётся с позиции прошлой сессии - на кадр
             // мелькает в случайном месте. Ставим строковую позицию в конец (сеттер
             // поднимает m_IsCaretPositionDirty - каретка уедет в конец в первом же
@@ -242,29 +243,24 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             return sb.ToString().ToLowerInvariant();
         }
 
-    // Слово под указанной экранной точкой - через штатный хит-тест TMP.
-        static bool TryGetWordAt(Terminal t, Vector2 screenPos, out string rawWord, out string key, out int start, out int end)
+        // Индекс символа под экранной точкой - через штатный хит-тест TMP.
+        static int HitCharIndex(TMP_Text tc, Camera cam, Vector2 screenPos)
         {
-            rawWord = null; key = null; start = -1; end = -1;
-            TMP_Text tc = t.screenText != null ? t.screenText.textComponent : null;
-            if (tc == null) return false;
-            Camera cam = GetCam(tc);
-            if (cam == null) return false;
-
-            TMP_TextInfo ti = tc.textInfo;
             int idx = TMP_TextUtilities.FindIntersectingCharacter(tc, screenPos, cam, true);
-            if (idx < 0 || idx >= ti.characterCount) return false;
-            if (!IsWordChar(ti.characterInfo[idx])) return false;
-
-            int s = idx, e = idx;
-            while (s > 0 && IsWordChar(ti.characterInfo[s - 1])) s--;
-            while (e < ti.characterCount - 1 && IsWordChar(ti.characterInfo[e + 1])) e++;
-
-            start = s; end = e;
-            rawWord = BuildWord(ti, s, e);
-            key = Normalize(rawWord);
-            return !string.IsNullOrEmpty(key);
+            if (idx < 0 || idx >= tc.textInfo.characterCount) return -1;
+            return idx;
         }
+
+        // Диапазон команды, содержащий указанный символ (N-грамма "Zap gun" и
+        // сегмент "TZP" покрывают несколько символов, поэтому ищем по диапазону).
+        static int FindRangeAt(int charIdx)
+        {
+            if (charIdx < 0) return -1;
+            for (int r = 0; r < cmdStarts.Count; r++)
+                if (charIdx >= cmdStarts[r] && charIdx <= cmdEnds[r]) return r;
+            return -1;
+        }
+
 
         // --- подсветка через цвета вершин TMP ---
         static readonly Color32 CommandColor = new Color32(90, 200, 255, 255);   // канонические (заголовки/кавычки)
@@ -284,11 +280,28 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
 
     // Собираем границы всех слов текущего текста, которые являются командами.
         // Канонические вхождения: заголовки ">MOONS" и слова в кавычках '"Help"' -
-        // их подсвечиваем ярко; остальные вхождения того же слова - приглушённо.
+        // их подсвечиваем ярко; остальные - приглушённо.
+        //
+        // Порядок приоритета (для дедупа пересечений):
+        //  1. Точное совпадение слова (покрывает весь токен)
+        //  2. Сегмент токена с гифеном (TZP-Inhalant → TZP, ключ "tzp")
+        //  3. N-грамма из 2 соседних слов (Zap gun → zapgun, ключ "zapgun")
+        static bool AddRange(int s, int e, string key, bool canonical)
+        {
+            // Дедуп: пропускать, если пересекается с уже добавленным диапазоном
+            for (int r = 0; r < cmdStarts.Count; r++)
+                if (s <= cmdEnds[r] && e >= cmdStarts[r]) return false;
+            cmdStarts.Add(s); cmdEnds.Add(e); cmdCanonical.Add(canonical); cmdKeys.Add(key);
+            return true;
+        }
+
         static void BuildCommandRanges(TMP_Text tc)
         {
-            cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear();
+            cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
             TMP_TextInfo ti = tc.textInfo;
+
+            // Собираем все слова с их индексами
+            var words = new List<(int s, int e, string key)>();
             int i = 0;
             while (i < ti.characterCount)
             {
@@ -297,13 +310,54 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 while (i < ti.characterCount && IsWordChar(ti.characterInfo[i])) i++;
                 int e = i - 1;
                 string key = Normalize(BuildWord(ti, s, e));
-                if (string.IsNullOrEmpty(key) || !clickableKeys.Contains(key)) continue;
+                words.Add((s, e, key));
+            }
 
-                // предшествующий видимый символ: '>' => заголовок; '"' сразу перед словом => кавычки
-                char prev = FindPrevVisibleChar(ti, s);
-                char next = FindNextVisibleChar(ti, e);
-                bool canonical = prev == '>' || prev == '"' || next == '"';
-                cmdStarts.Add(s); cmdEnds.Add(e); cmdCanonical.Add(canonical);
+            // 1. Точное совпадение по каждому слову (приоритет: высокий)
+            for (int w = 0; w < words.Count; w++)
+            {
+                if (clickableKeys.Contains(words[w].key))
+                {
+                    char prev = FindPrevVisibleChar(ti, words[w].s);
+                    AddRange(words[w].s, words[w].e, words[w].key, prev == '>' || prev == '"');
+                }
+            }
+
+            // 2. Сегменты в токенах с гифеном: "TZP-Inhalant" → "TZP" (ключ "tzp")
+            for (int w = 0; w < words.Count; w++)
+            {
+                string raw = BuildWord(ti, words[w].s, words[w].e);
+                if (!raw.Contains('-')) continue;
+
+                // raw[c] соответствует textInfo[words[w].s + c]
+                int segStart = words[w].s;
+                for (int c = 0; c <= raw.Length; c++)
+                {
+                    if (c != raw.Length && raw[c] != '-') continue;
+                    int segEnd = words[w].s + c - 1;
+                    if (segEnd >= segStart)
+                    {
+                        string segKey = Normalize(BuildWord(ti, segStart, segEnd));
+                        if (clickableKeys.Contains(segKey))
+                        {
+                            char prev = FindPrevVisibleChar(ti, segStart);
+                            AddRange(segStart, segEnd, segKey, prev == '>' || prev == '"');
+                        }
+                    }
+                    segStart = words[w].s + c + 1;
+                }
+            }
+
+            // 3. N-граммы: "Zap gun" → "zapgun", "Extension ladder" → "extensionladder"
+            for (int w = 0; w < words.Count - 1; w++)
+            {
+                if (words[w].key.Length == 0 || words[w + 1].key.Length == 0) continue;
+                string combined = words[w].key + words[w + 1].key;
+                if (clickableKeys.Contains(combined))
+                {
+                    char prev = FindPrevVisibleChar(ti, words[w].s);
+                    AddRange(words[w].s, words[w + 1].e, combined, prev == '>' || prev == '"');
+                }
             }
         }
 
@@ -425,11 +479,11 @@ UpdateClickableCache(t);
             if (m != null)
             {
                 Vector2 cp = ToCamSpace(cam, m.position.ReadValue());
-                string raw, key; int ws, we;
-                if (TryGetWordAt(t, cp, out raw, out key, out ws, out we) && clickableKeys.Contains(key))
+                int r = FindRangeAt(HitCharIndex(tc, cam, cp));
+                if (r >= 0)
                 {
-                    nhs = ws; nhe = we;
-                    if (m.leftButton.wasPressedThisFrame) clickedKey = key;
+                    nhs = cmdStarts[r]; nhe = cmdEnds[r];
+                    if (m.leftButton.wasPressedThisFrame) clickedKey = cmdKeys[r];
                 }
             }
 
@@ -559,7 +613,7 @@ UpdateClickableCache(t);
     //
     //  Ограничение каретки концом совпадает с ванильным поведением:
     //  Terminal.Update и так каждый кадр возвращает её в конец, так что ручное
-    //  позиционирование каретки в терминале не работает и без нас.
+    //  позиционирование каретки в терминале не работает и без нас. 
     // =====================================================================
     [HarmonyPatch(typeof(TMP_InputField), "OnFillVBO")]
     internal static class Patch_OnFillVBO

@@ -228,6 +228,34 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     GameObject плагина игра уничтожает при первой загрузке сцены, Update
     плагина не вызывается. Создавать через EnsureRunner().
 
+  - ПОДСВЕТКА МНОГОСЛОВНЫХ НАЗВАНИЙ (store-товары). Важно: игра в
+    ParsePlayerSentence сначала зовёт RemovePunctuation (снимает ВСЮ
+    пунктуацию, включая '-'), и только потом режет ввод ПО ПРОБЕЛАМ.
+    Значит валидна ровно ОДНА лексема-ключ, а отображаемое имя товара
+    может быть из двух слов или через дефис. Отсюда два класса промахов
+    при точном сравнении (дамп clickableKeys подтвердил):
+      "TZP-Inhalant"      -> tzpinhalant  а ключ "tzp"
+      "Radar-booster"     -> radarbooster а ключ "radar"
+      "Zap gun"           -> ключ "zapgun" (два слова в отображении)
+      "Extension ladder"  -> ключ "extensionladder"
+      "Spray paint"       -> ключ "spraypaint"
+      "Weed killer"       -> ключ "weedkiller"
+      "Belt bag"          -> ключ "beltbag"
+    ("Walkie-talkie" подсвечивался, т.к. walkietalkie == ключу.)
+    BuildCommandRanges теперь строит диапазоны в трёх проходах, каждый
+    диапазон хранит СВОЙ ключ (cmdKeys) для ExecuteCommand:
+      1. точное совпадение слова;
+      2. сегмент токена с дефисом (TZP-Inhalant -> TZP, ключ tzp);
+      3. N-грамма двух соседних слов (Zap gun -> zapgun).
+    AddRange отсечает пересечения, поэтому приоритет у более точного
+    прохода (Pro-flashlight матчится целиком, а не сегментом flashlight).
+    КЛИК обязан подставлять КЛЮЧ, а не текст с экрана: "TZP-Inhalant"
+    парсер не понимает, а "tzp" понимает. Проверено логами игры:
+      click 'tzp'   -> node 'CannotAfford'
+      click 'radar' -> node 'buyRadarBooster'
+      Parsed word: radar / noun keyword: radar ; verb keyword: buy
+
+
 РЕШЕНО (коммит 843f1c1):
   Мигание каретки input-поля в случайном месте текста — ИСПРАВЛЕНО.
   Причина: Terminal.Update каждый кадр делает screenText.caretPosition =
