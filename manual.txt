@@ -307,6 +307,29 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     английском (переведены только "Цена:", заголовки). Если мод переведёт
     названия товаров — ключи не совпадут, но это редкий кейс.
 
+  - VERB+NOUN КОМАНДЫ (VIEW MONITOR, INSIDE CAM и др.). Глаголы (view, buy,
+    info, route) и существительные (monitor, shovel, store...) имеют
+    compatibleNouns — список допустимых существительных для глагола.
+    Игра: ParseWord(verb) → verb keyword, ParseWord(noun) → noun keyword →
+    compatibleNouns[verb].result → возвращает узел.
+    Добавлен второй проход в UpdateClickableCache: для каждого глагола с
+    compatibleNouns добавляем фразу "verb noun" в keyMap (нормализованно
+    без пробела, сырое значение с пробелом). N-грамма pass (1-3 слова)
+    подхватит: "viewmonitor" → "view monitor".
+    Пример: ">VIEW MONITOR" в хелпе → подсвечивается целиком, клик отправляет
+    "view monitor" → игра переключает камеру монитора.
+
+  - КОМАНДЫ SWITCH, PING, TRANSMIT, FLASH — НЕ ПОДСВЕЧИВАЮТСЯ.
+    Причина: они НЕ в allKeywords. Это хардкод в ParsePlayerSentence
+    (switch на array[0] — строки 1098-1133 декомпилированного Terminal.cs).
+    Все они требуют аргументы: switch [player], flash [radar], ping [radar],
+    transmit [message]. Клик без аргумента → ParserError. Оставляем как есть.
+
+  - FLASH и EJECT — ванильные команды, не из модов. EJECT — keyword
+    TerminalKeyword с specialKeywordResult. FLASH — хардкод в ParsePlayerSentence.
+    Они есть в vanilla-терминале, в хелпе и при любом запуске.
+
+
 
 РЕШЕНО (коммит 843f1c1):
   Мигание каретки input-поля в случайном месте текста — ИСПРАВЛЕНО.

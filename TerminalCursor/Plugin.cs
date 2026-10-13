@@ -608,7 +608,18 @@ UpdateClickableCache(t);
             if (list == null || list.allKeywords == null) return;
             foreach (TerminalKeyword kw in list.allKeywords)
             {
-                if (kw == null || string.IsNullOrEmpty(kw.word) || kw.isVerb) continue;
+                if (kw == null || string.IsNullOrEmpty(kw.word)) continue;
+                if (kw.isVerb)
+                {
+                    // verb+noun пары: "view monitor", "inside cam" и т.д.
+                    // Игра парсит: ParseWord(verb) → verb keyword,
+                    // ParseWord(noun) → noun keyword → compatibleNouns[verb].result
+                    if (kw.compatibleNouns != null)
+                        foreach (var c in kw.compatibleNouns)
+                            if (c != null && c.noun != null && c.result != null && !string.IsNullOrEmpty(c.noun.word))
+                                AddKey(kw.word + " " + c.noun.word);
+                    continue;
+                }
                 // одиночное слово работает, если есть глагол по умолчанию
                 // (moons/store/...), готовый узел-ответ (help, scan) или это код объекта
                 if (kw.defaultVerb != null || kw.specialKeywordResult != null || kw.accessTerminalObjects)
