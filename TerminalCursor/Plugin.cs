@@ -32,12 +32,17 @@ namespace TerminalCursor
         static readonly List<int> cmdStarts = new List<int>(); // границы всех командных слов
         static readonly List<int> cmdEnds = new List<int>();
         static readonly List<bool> cmdCanonical = new List<bool>(); // заголовки '>X' / "X"
-        static readonly List<string> cmdKeys = new List<string>(); // ключ для ExecuteCommand
+        static readonly List<string> cmdKeys = new List<string>(); // сырой ключ для ExecuteCommand
 
-        // Кэш кликабельных ключей текущего узла: строится один раз на узел,
-        // чтобы per-frame проверка слов не перебирала все 155 ключей игры.
-        static string cachedNodeKey;
+        // Нормализованные → сырые ключи: normalize("inverse teleporter") → "inverse teleporter"
+        static readonly Dictionary<string, string> keyMap = new Dictionary<string, string>();
         static readonly HashSet<string> clickableKeys = new HashSet<string>();
+
+        // Нормализованные display-имена товаров (из текста): "stun grenade", "signal translator"
+        static readonly HashSet<string> displayNames = new HashSet<string>();
+
+        // Кэш узла: пересборка при смене терминального узла
+        static string cachedNodeKey;
 
         // Свой runner-объект: GameObject самого плагина игра уничтожает при загрузке
         // первой сцены, поэтому Update плагина не вызывается. Объект, созданный уже
@@ -115,7 +120,7 @@ currentTerminal = self;
             lastVisLines = -1;
             hoverStart = hoverEnd = -1;
             cachedNodeKey = null;
-            clickableKeys.Clear();
+            clickableKeys.Clear(); keyMap.Clear(); displayNames.Clear();
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
 // При повторном входе каретка остаётся с позиции прошлой сессии - на кадр
             // мелькает в случайном месте. Ставим строковую позицию в конец (сеттер
@@ -278,29 +283,80 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             arr[v] = c; arr[v + 1] = c; arr[v + 2] = c; arr[v + 3] = c;
         }
 
-    // Собираем границы всех слов текущего текста, которые являются командами.
-        // Канонические вхождения: заголовки ">MOONS" и слова в кавычках '"Help"' -
-        // их подсвечиваем ярко; остальные - приглушённо.
+    // Собираем границы всех командных слов текущего текста.
         //
-        // Порядок приоритета (для дедупа пересечений):
-        //  1. Точное совпадение слова (покрывает весь токен)
-        //  2. Сегмент токена с гифеном (TZP-Inhalant → TZP, ключ "tzp")
-        //  3. N-грамма из 2 соседних слов (Zap gun → zapgun, ключ "zapgun")
+        // ВАЖНО про парсер игры (Terminal.ParsePlayerSentence):
+        //   s = RemovePunctuation(ввод)   - снимает ВСЮ пунктуацию (включая '-'),
+        //                                   пробелы СОХРАНЯЮТСЯ, регистр -> lower
+        //   CheckForExactSentences(s)     - s == kw.word ДОСЛОВНО
+        //   иначе Split(' ') -> ParseWord(каждое слово): точное совпадение,
+        //                                   иначе kw.word.StartsWith(префикс)
+        // Сырые ключи игры бывают с пробелом ("zap gun", "inverse teleporter",
+        // "extension ladder", "loud horn", "weed killer", "belt bag",
+        // "spray paint", "pro flashlight", "green suit") и с дефисом
+        // ("walkie-talkie"). Значит в ExecuteCommand надо слать СЫРОЙ ключ,
+        // а не его нормализацию: "inverseteleporter" игра не находит как
+        // точную фразу и скатывается к "teleporter" (другой товар!).
+        //
+        // Приоритет диапазонов (длинное раньше короткого, иначе дедуп
+        // отрежет длинное):
+        //  0. display-имя из строки "... // Price:" - покрывает всё имя товара
+        //  1. точное совпадение токена с ключом
+        //  2. сегмент токена с дефисом (TZP-Inhalant -> tzp) - покрывает ВЕСЬ токен
         static bool AddRange(int s, int e, string key, bool canonical)
         {
-            // Дедуп: пропускать, если пересекается с уже добавленным диапазоном
             for (int r = 0; r < cmdStarts.Count; r++)
                 if (s <= cmdEnds[r] && e >= cmdStarts[r]) return false;
             cmdStarts.Add(s); cmdEnds.Add(e); cmdCanonical.Add(canonical); cmdKeys.Add(key);
             return true;
         }
 
+        // Display-имена товаров прямо из текста: строки "<имя>  //  Price: ...".
+        static void ParseDisplayNames(string text)
+        {
+            displayNames.Clear();
+            if (string.IsNullOrEmpty(text)) return;
+            int pos = 0;
+            while (pos < text.Length)
+            {
+                int nl = text.IndexOf('\n', pos);
+                if (nl < 0) nl = text.Length;
+                string line = text.Substring(pos, nl - pos);
+                pos = nl + 1;
+
+                int sl = line.IndexOf("//", StringComparison.Ordinal);
+                if (sl <= 0) continue;
+                if (!line.Substring(sl + 2).TrimStart().StartsWith("Price:", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string name = line.Substring(0, sl).Trim();
+                if (name.Length > 0 && name[0] == '*') name = name.Substring(1).Trim();
+                string norm = Normalize(name);
+                if (norm.Length > 1) displayNames.Add(norm);
+            }
+        }
+
+        // Разрешаем display-имя в СЫРОЙ ключ: точное совпадение, иначе самый
+        // длинный ключ-префикс ("stungrenade" -> "stun", "signaltranslator" -> "signal").
+        static string ResolveDisplayKey(string normName)
+        {
+            string raw;
+            if (keyMap.TryGetValue(normName, out raw)) return raw;
+            string best = null, bestRaw = null;
+            foreach (KeyValuePair<string, string> kv in keyMap)
+            {
+                if (kv.Key.Length < 3 || kv.Key.Length >= normName.Length) continue;
+                if (!normName.StartsWith(kv.Key, StringComparison.Ordinal)) continue;
+                if (best == null || kv.Key.Length > best.Length) { best = kv.Key; bestRaw = kv.Value; }
+            }
+            return bestRaw;
+        }
+
         static void BuildCommandRanges(TMP_Text tc)
         {
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
             TMP_TextInfo ti = tc.textInfo;
+            ParseDisplayNames(tc.text);
 
-            // Собираем все слова с их индексами
             var words = new List<(int s, int e, string key)>();
             int i = 0;
             while (i < ti.characterCount)
@@ -310,54 +366,63 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 while (i < ti.characterCount && IsWordChar(ti.characterInfo[i])) i++;
                 int e = i - 1;
                 string key = Normalize(BuildWord(ti, s, e));
+                if (key.Length == 0) continue;
                 words.Add((s, e, key));
             }
 
-            // 1. Точное совпадение по каждому слову (приоритет: высокий)
+            // 0. Display-имена (до 4 слов в одной строке), берём самое длинное.
             for (int w = 0; w < words.Count; w++)
             {
-                if (clickableKeys.Contains(words[w].key))
+                var sb = new StringBuilder();
+                int bestEnd = -1; string bestKey = null;
+                for (int k = w; k < words.Count && k <= w + 3; k++)
                 {
-                    char prev = FindPrevVisibleChar(ti, words[w].s);
-                    AddRange(words[w].s, words[w].e, words[w].key, prev == '>' || prev == '"');
+                    if (k > w && ti.characterInfo[words[k - 1].e].lineNumber != ti.characterInfo[words[k].s].lineNumber) break;
+                    sb.Append(words[k].key);
+                    string norm = sb.ToString();
+                    if (!displayNames.Contains(norm)) continue;
+                    string rawKey = ResolveDisplayKey(norm);
+                    if (rawKey == null) continue;
+                    bestEnd = words[k].e; bestKey = rawKey;
                 }
+                if (bestKey == null) continue;
+                char prev = FindPrevVisibleChar(ti, words[w].s);
+                AddRange(words[w].s, bestEnd, bestKey, prev == '>' || prev == '"');
             }
 
-            // 2. Сегменты в токенах с гифеном: "TZP-Inhalant" → "TZP" (ключ "tzp")
+            // 1. Точное совпадение токена с ключом.
             for (int w = 0; w < words.Count; w++)
             {
-                string raw = BuildWord(ti, words[w].s, words[w].e);
-                if (!raw.Contains('-')) continue;
+                string raw;
+                if (!keyMap.TryGetValue(words[w].key, out raw)) continue;
+                char prev = FindPrevVisibleChar(ti, words[w].s);
+                AddRange(words[w].s, words[w].e, raw, prev == '>' || prev == '"');
+            }
 
-                // raw[c] соответствует textInfo[words[w].s + c]
+            // 2. Сегменты дефисного токена: подсвечиваем ВЕСЬ токен, а не сегмент.
+            for (int w = 0; w < words.Count; w++)
+            {
+                string text = BuildWord(ti, words[w].s, words[w].e);
+                if (text.IndexOf('-') < 0) continue;
+
+                string bestRaw = null;
                 int segStart = words[w].s;
-                for (int c = 0; c <= raw.Length; c++)
+                for (int c = 0; c <= text.Length; c++)
                 {
-                    if (c != raw.Length && raw[c] != '-') continue;
+                    if (c != text.Length && text[c] != '-') continue;
                     int segEnd = words[w].s + c - 1;
                     if (segEnd >= segStart)
                     {
                         string segKey = Normalize(BuildWord(ti, segStart, segEnd));
-                        if (clickableKeys.Contains(segKey))
-                        {
-                            char prev = FindPrevVisibleChar(ti, segStart);
-                            AddRange(segStart, segEnd, segKey, prev == '>' || prev == '"');
-                        }
+                        string raw;
+                        if (segKey.Length > 0 && keyMap.TryGetValue(segKey, out raw) &&
+                            (bestRaw == null || segKey.Length > bestRaw.Length)) bestRaw = raw;
                     }
                     segStart = words[w].s + c + 1;
                 }
-            }
-
-            // 3. N-граммы: "Zap gun" → "zapgun", "Extension ladder" → "extensionladder"
-            for (int w = 0; w < words.Count - 1; w++)
-            {
-                if (words[w].key.Length == 0 || words[w + 1].key.Length == 0) continue;
-                string combined = words[w].key + words[w + 1].key;
-                if (clickableKeys.Contains(combined))
-                {
-                    char prev = FindPrevVisibleChar(ti, words[w].s);
-                    AddRange(words[w].s, words[w + 1].e, combined, prev == '>' || prev == '"');
-                }
+                if (bestRaw == null) continue;
+                char prev = FindPrevVisibleChar(ti, words[w].s);
+                AddRange(words[w].s, words[w].e, bestRaw, prev == '>' || prev == '"');
             }
         }
 
@@ -512,7 +577,7 @@ UpdateClickableCache(t);
                     if (cn.terminalOptions != null)
                         foreach (CompatibleNoun opt in cn.terminalOptions)
                             if (opt != null && opt.noun != null && !string.IsNullOrEmpty(opt.noun.word))
-                                clickableKeys.Add(Normalize(opt.noun.word));
+                                AddKey(opt.noun.word);
                     return;
                 }
             }
@@ -525,8 +590,25 @@ UpdateClickableCache(t);
                 // одиночное слово работает, если есть глагол по умолчанию
                 // (moons/store/...), готовый узел-ответ (help, scan) или это код объекта
                 if (kw.defaultVerb != null || kw.specialKeywordResult != null || kw.accessTerminalObjects)
-                    clickableKeys.Add(Normalize(kw.word));
+                    AddKey(kw.word);
             }
+        }
+
+        // Ключ кладём под нормализованной формой (для сверки со словами экрана),
+        // но храним СЫРОЕ kw.word - его отправляем в парсер игры.
+        static void AddKey(string word)
+        {
+            string norm = Normalize(word);
+            if (norm.Length == 0) return;
+            clickableKeys.Add(norm);
+            string old;
+            if (keyMap.TryGetValue(norm, out old))
+            {
+                // при коллизии нормализаций ("zap gun"/"zapgun") предпочтительнее
+                // тот ключ, что парсится точной фразой, - с пробелом
+                if (word.IndexOf(' ') < 0 && old.IndexOf(' ') >= 0) return;
+            }
+            keyMap[norm] = word;
         }
 
         private static bool IsWordChar(TMP_CharacterInfo ci)
