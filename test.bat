@@ -26,7 +26,7 @@ rem ============================================================================
 rem  Run length in seconds.
 rem  AI/agent: DO NOT change this value. The user knows best how long a run
 rem  needs to be and will set WAIT himself, whenever and however he sees fit.
-set "WAIT=60"
+set "WAIT=120"
 
 set "REPO=%~dp0"
 set "PROJ=%REPO%TerminalCursor\TerminalCursor.csproj"

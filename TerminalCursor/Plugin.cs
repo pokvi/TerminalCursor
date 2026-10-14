@@ -44,6 +44,10 @@ namespace TerminalCursor
         // Кэш узла: пересборка при смене терминального узла
         static string cachedNodeKey;
 
+        // Динамические команды для страниц switch/ping/flash (target list)
+        static readonly List<string> customCmds = new List<string>();
+        static TerminalNode lastCustomNode;
+
         // Свой runner-объект: GameObject самого плагина игра уничтожает при загрузке
         // первой сцены, поэтому Update плагина не вызывается. Объект, созданный уже
         // при загруженной сцене (DontDestroyOnLoad + HideAndDontSave), живёт.
@@ -401,13 +405,14 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 AddRange(words[w].s, bestEnd, bestKey, prev == '>' || prev == '"');
             }
 
-            // 2. N-граммы 1-3 слова: "Zap gun" -> keyMap["zapgun"]="zap gun"
+            // 2. N-граммы 1-4 слова: "Zap gun" -> keyMap["zapgun"]="zap gun"
             //    "Inverse Teleporter" -> keyMap["inverseteleporter"]="inverse teleporter"
+            //    "switch Player 1" -> keyMap["switchplayer1"]="switch Player 1"
             for (int w = 0; w < words.Count; w++)
             {
                 var sb = new StringBuilder();
                 int bestEnd = -1; string bestKey = null;
-                for (int k = w; k < words.Count && k <= w + 2; k++)
+                for (int k = w; k < words.Count && k <= w + 3; k++)
                 {
                     if (k > w && ti.characterInfo[words[k - 1].e].lineNumber != ti.characterInfo[words[k].s].lineNumber) break;
                     sb.Append(words[k].key);
@@ -496,12 +501,31 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             tc.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
         }
 
-// Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
+    // Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
         static void ExecuteCommand(Terminal t, string key)
         {
             if (t.screenText == null || string.IsNullOrEmpty(key)) return;
-            string baseText = t.currentText ?? t.screenText.text;
-            string newText = baseText + key;
+            string newText;
+            // На кастомных узлах (TC_) заменяем весь текст командой, не добавляем.
+            // Иначе клик на "> switch Player 1" даст "...switch Player 1switch Player 1"
+            if (t.currentNode != null && t.currentNode.name.StartsWith("TC_"))
+            {
+                newText = key;
+                // TerminalCursorPlugin.mls.LogInfo($"[EXEC] TC_ node: replacing text with '{key}'");
+
+                // ВАЖНО: устанавливаем modifyingText = true, чтобы TextChanged игры
+                // не восстановил старый текст узла (он делает screenText.text = currentText
+                // когда textAdded < 0, а замена 150→15 символов даёт отрицательную разницу).
+                var modField = t.GetType().GetField("modifyingText",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance);
+                if (modField != null) modField.SetValue(t, true);
+            }
+            else
+            {
+                string baseText = t.currentText ?? t.screenText.text;
+                newText = baseText + key;
+            }
             // На кадр подстановки гасим поле: каретка не рисуется вообще, а игра
             // в конце OnSubmit сама переактивирует поле уже на новом тексте
             // (ActivateInputField стоит последней строкой в OnSubmit).
@@ -591,6 +615,13 @@ UpdateClickableCache(t);
             cachedNodeKey = nodeKey;
             keyMap.Clear();
 
+            // Кастомные узлы (TC_switch, TC_ping, TC_flash) — берём команды из customCmds
+            if (nodeKey != null && nodeKey.StartsWith("TC_"))
+            {
+                foreach (var cmd in customCmds) AddKey(cmd);
+                return;
+            }
+
             if (cn != null)
             {
                 if (cn.acceptAnything) return; // узел принимает всё - ничего не подсвечиваем
@@ -623,6 +654,11 @@ UpdateClickableCache(t);
                 if (kw.defaultVerb != null || kw.specialKeywordResult != null || kw.accessTerminalObjects)
                     AddKey(kw.word);
             }
+
+            // Добавляем ping/flash как кликабельные (их нет в allKeywords, но они есть
+            // в хелпе страницы "Other commands" как команды с аргументами).
+            AddKey("ping");
+            AddKey("flash");
         }
 
         // Ключ кладём под нормализованной формой (для сверки со словами экрана),
@@ -645,6 +681,154 @@ UpdateClickableCache(t);
         {
             if (!ci.isVisible) return false;
             return !char.IsWhiteSpace(ci.character);
+        }
+
+        // Построение кастомного узла со списком целей для switch/ping/flash.
+        // Игра использует CheckForPlayerNameCommand(array[0], array[1]) —
+        // array[1] матчится по имени GameObject цели (radarTargets[i].name).
+        internal static TerminalNode BuildTargetListNode(Terminal t, string cmd)
+        {
+            // Уничтожаем старый кастомный нод (ScriptableObject утекает)
+            if (lastCustomNode != null) UnityEngine.Object.Destroy(lastCustomNode);
+            lastCustomNode = null;
+
+            var sb = new StringBuilder();
+            if (cmd == "switch")
+                sb.AppendLine("Switching radar cam view.");
+            else if (cmd == "ping")
+                sb.AppendLine("Ping radar booster.");
+            else
+                sb.AppendLine("Flash radar booster.");
+            sb.AppendLine();
+
+            customCmds.Clear();
+            var map = StartOfRound.Instance?.mapScreen;
+            if (map == null)
+            {
+                sb.AppendLine("No map screen available.");
+            }
+            else
+            {
+                // radarTargets — List<RadarTarget> (или List<GameObject> с isNonPlayer).
+                // Используем reflection для безопасного доступа.
+                var targetsField = map.GetType().GetField("radarTargets",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic);
+                var radarTargets = targetsField?.GetValue(map) as System.Collections.IList;
+
+                int curIdx = -1;
+                var targetIdxField = map.GetType().GetField("targetTransformIndex",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                    | System.Reflection.BindingFlags.NonPublic);
+                if (targetIdxField != null)
+                    curIdx = (int)targetIdxField.GetValue(map);
+
+                if (radarTargets == null || radarTargets.Count == 0)
+                    sb.AppendLine("No radar targets.");
+                else
+                {
+                    // Получаем поле/свойство "name" (Unity-имя GameObject / RadarTarget.name)
+                    var firstTarget = radarTargets[0];
+                    var nameField = firstTarget.GetType().GetField("name",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    var namePropInfo = firstTarget.GetType().GetProperty("name");
+
+                    for (int i = 0; i < radarTargets.Count; i++)
+                    {
+                        var target = radarTargets[i];
+                        string rawName = nameField?.GetValue(target)?.ToString()
+                                       ?? namePropInfo?.GetValue(target)?.ToString()
+                                       ?? "";
+                        // Убираем '#' из имён (RemovePunctuation игры его снимает,
+                        // но при отправке команды через ExecuteCommand # ломает textAdded)
+                        string name = rawName.Replace("#", "");
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        string line = cmd + " " + name;
+                        customCmds.Add(line);
+
+                        sb.Append("> ").Append(line);
+                        if (i == curIdx)
+                            sb.Append("  (current)");
+                        sb.AppendLine();
+                    }
+                }
+            }
+
+            var node = ScriptableObject.CreateInstance<TerminalNode>();
+            node.name = "TC_" + cmd;
+            node.displayText = sb.ToString();
+            node.clearPreviousText = true;
+            lastCustomNode = node;
+            // Сбрасываем кэш узла — список целей мог измениться (игроки ушли/пришли)
+            cachedNodeKey = null;
+            return node;
+        }
+
+        // Выполнение команды switch/ping/flash с аргументом (цель).
+        // Вызывается из Harmony-патча ParsePlayerSentence.
+        // Пропускаем сломанный CheckForPlayerNameCommand (матчит только array[1])
+        // и вызываем MapScreen-методы напрямую.
+        internal static TerminalNode ExecuteTargetCommand(Terminal t, string cmd, string arg)
+        {
+            var map = StartOfRound.Instance?.mapScreen;
+            if (map == null) return null;
+
+            var targetsField = map.GetType().GetField("radarTargets",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic);
+            var radarTargets = targetsField?.GetValue(map) as System.Collections.IList;
+            if (radarTargets == null) return null;
+
+            // Нормализуем аргумент (убираем всё, кроме букв/цифр) — совпадает с игрой
+            string normArg = Normalize(arg);
+            if (normArg.Length < 3) return null;
+
+            // Получаем имя цели для каждого таргета
+            var nameField = radarTargets[0].GetType().GetField("name",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            var namePropInfo = radarTargets[0].GetType().GetProperty("name");
+
+            // Точный матч
+            int idx = -1;
+            for (int i = 0; i < radarTargets.Count; i++)
+            {
+                var raw = nameField?.GetValue(radarTargets[i])?.ToString()
+                       ?? namePropInfo?.GetValue(radarTargets[i])?.ToString() ?? "";
+                string norm = Normalize(raw.Replace("#", ""));
+                if (norm == normArg) { idx = i; break; }
+            }
+            // Префикс-матч (как в игре, от длинного к короткому)
+            if (idx < 0)
+            {
+                for (int i = 0; i < radarTargets.Count; i++)
+                {
+                    var raw = nameField?.GetValue(radarTargets[i])?.ToString()
+                           ?? namePropInfo?.GetValue(radarTargets[i])?.ToString() ?? "";
+                    string norm = Normalize(raw.Replace("#", ""));
+                    if (norm.Length > 2 && norm.StartsWith(normArg)) { idx = i; break; }
+                }
+            }
+
+            if (idx < 0) return null;
+
+            // Вызываем метод MapScreen напрямую
+            string methodName = cmd == "switch" ? "SwitchRadarTargetAndSync"
+                              : cmd == "ping"  ? "PingRadarBooster"
+                              : "FlashRadarBooster";
+            try
+            {
+                map.GetType().GetMethod(methodName)?.Invoke(map, new object[] { idx });
+            }
+            catch (Exception ex)
+            {
+                TerminalCursorPlugin.mls.LogWarning($"[TC] {methodName} failed: {ex.Message}");
+            }
+
+            // Возвращаем game-специальную ноду (сообщение об успехе)
+            int specialIdx = cmd == "switch" ? 20 : cmd == "ping" ? 21 : 23;
+            return t.terminalNodes?.specialNodes != null && t.terminalNodes.specialNodes.Count > specialIdx
+                ? t.terminalNodes.specialNodes[specialIdx] : null;
         }
 
         private static string BuildWord(TMP_TextInfo ti, int start, int end)
@@ -696,6 +880,71 @@ UpdateClickableCache(t);
 
         internal static void Set(FieldInfo f, TMP_InputField x, int v) { if (f != null) f.SetValue(x, v); }
         internal static void SetB(FieldInfo f, TMP_InputField x, bool v) { if (f != null) f.SetValue(x, v); }
+    }
+
+    // =====================================================================
+    //  Harmony-патч на ParsePlayerSentence — перехватывает одиночные слова
+    //  switch/ping/flash и возвращает кастомный узел со списком целей.
+    //  Это нужно, потому что:
+    //  - "switch" без аргумента → specialKeywordResult → статичная страница
+    //    "Switching radar cam view." без списка целей;
+    //  - "ping" без аргумента → specialNodes[10] → "[There was no action
+    //    supplied with the word.]";
+    //  - "flash" без аргумента → ParseWord("flash") → prefix-match →
+    //    "flashlight" → страница покупки фонарика.
+    //  Мод возвращает динамический узел со списком radarTargets (имена игроков
+    //  и радаров) в формате "> switch Player 1", где каждая строка кликабельна.
+    // =====================================================================
+    [HarmonyPatch(typeof(Terminal), "ParsePlayerSentence")]
+    internal static class Patch_ParsePlayerSentence
+    {
+        static MethodInfo removePunct;
+
+        static bool Prefix(Terminal __instance, ref TerminalNode __result)
+        {
+            // Не трогаем узлы с overrideOptions/acceptAnything (confirm/deny и т.д.)
+            if (__instance.currentNode != null &&
+                (__instance.currentNode.overrideOptions || __instance.currentNode.acceptAnything))
+                return true;
+
+            if (__instance.screenText == null || __instance.textAdded <= 0) return true;
+
+            string s = __instance.screenText.text.Substring(
+                Mathf.Max(0, __instance.screenText.text.Length - __instance.textAdded));
+
+            // Вызываем RemovePunctuation игры (приватный метод)
+            if (removePunct == null)
+                removePunct = AccessTools.Method(typeof(Terminal), "RemovePunctuation");
+            if (removePunct != null)
+                s = (string)removePunct.Invoke(__instance, new object[] { s });
+
+            // DEBUG: лог состояния
+            // TerminalCursorPlugin.mls.LogInfo($"[PREFIX] textLen={__instance.screenText.text.Length} textAdded={__instance.textAdded} s=\"{s}\"");
+
+            string[] parts = s.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 1)
+            {
+                // Команда с аргументом (например "switch player 1")
+                // Пропускаем сломанный CheckForPlayerNameCommand (матчит только array[1])
+                // и вызываем MapScreen-методы напрямую
+                string cmdArg = parts[0].ToLowerInvariant();
+                if (cmdArg == "switch" || cmdArg == "ping" || cmdArg == "flash")
+                {
+                    // Собираем аргумент: всё после команды
+                    string arg = s.Substring(cmdArg.Length).Trim();
+                    __result = TerminalCursorPlugin.ExecuteTargetCommand(__instance, cmdArg, arg);
+                    if (__result != null) return false;
+                    // Если не нашли цель — пусть игра вернёт ParserError
+                }
+                return true;
+            }
+
+            string cmd = parts[0].ToLowerInvariant();
+            if (cmd != "switch" && cmd != "ping" && cmd != "flash") return true;
+
+            __result = TerminalCursorPlugin.BuildTargetListNode(__instance, cmd);
+            return false;
+        }
     }
 
     // =====================================================================

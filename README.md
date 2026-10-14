@@ -1,4 +1,4 @@
-# TerminalMouse
+# TerminalCursor
 A mod which enables mouse cursor while player is using Terminal
 
 # Bug fixes
@@ -25,12 +25,9 @@ the caret always stays at the end of the text.
 
 # Releases
 
-### 1.0.1
+### 1.0.0
 * Locked camera when in terminal
 * Fixed vanilla blinking caret (see Bug fixes)
 * Command highlighting: store items (multi-word names, hyphenated names,
   display names like "Stun grenade"), verb+noun commands ("view monitor")
 * Clickable commands: click a highlighted word to run it
-
-### 1.0.0
-* Initial release
