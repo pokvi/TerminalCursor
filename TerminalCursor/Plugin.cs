@@ -140,7 +140,6 @@ currentTerminal = self;
             lastText = null;
             lastCharCount = -1;
             lastVisLines = -1;
-            hoverStart = hoverEnd = -1;
             cachedNodeKey = null;
             keyMap.Clear(); displayKeyMap.Clear();
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
@@ -798,7 +797,12 @@ UpdateClickableCache(t);
 
             var entries = GetValidTargets(cmd);
 
-            // 0 или 1 цель → не перехватывать, пусть игра сделает ванильно
+            // ping/flash без радаров → показать страницу товара Radar-booster
+            // (buy radar -> compatibleNouns.defaultVerb -> result)
+            if (entries.Length == 0 && (cmd == "ping" || cmd == "flash"))
+                return FindItemNodeByKeyword(t, "radar");
+
+            // 1 цель → не перехватывать, пусть игра сделает ванильно
             if (entries.Length < 2)
                 return null;
 
@@ -839,8 +843,8 @@ UpdateClickableCache(t);
 
                 sb.Append("> ").Append(rawLine);
 
-                // ПУНКТ 2: для switch помечаем радары как (radar)
-                if (e.isNonPlayer)
+                // ПУНКТ 3: пометка (radar) только для switch (ping/flash и так только радары)
+                if (cmd == "switch" && e.isNonPlayer)
                     sb.Append("  " + cfgMarkRadar.Value);
 
                 // Текущая цель помечена (current)
@@ -857,6 +861,32 @@ UpdateClickableCache(t);
             lastCustomNode = node;
             cachedNodeKey = null;
             return node;
+        }
+
+        // Найти страницу товара по keyword-слову (например "radar" -> Radar-booster).
+        // Алгоритм игры: keyword(word) -> defaultVerb (buy) -> compatibleNouns
+        // где noun == keyword -> result (страница товара с buyItemIndex).
+        internal static TerminalNode FindItemNodeByKeyword(Terminal t, string keywordWord)
+        {
+            var list = t.terminalNodes;
+            if (list?.allKeywords == null) return null;
+
+            TerminalKeyword noun = null;
+            TerminalKeyword buyVerb = null;
+            foreach (var kw in list.allKeywords)
+            {
+                if (kw == null || string.IsNullOrEmpty(kw.word)) continue;
+                if (kw.word == keywordWord) noun = kw;
+                else if (kw.word == "buy" && kw.isVerb) buyVerb = kw;
+            }
+            if (noun == null) return null;
+            if (buyVerb == null) buyVerb = noun.defaultVerb;
+            if (buyVerb?.compatibleNouns == null) return null;
+
+            foreach (var cn in buyVerb.compatibleNouns)
+                if (cn != null && cn.noun == noun && cn.result != null)
+                    return cn.result;
+            return null;
         }
 
         // Выполнение команды switch/ping/flash с аргументом (цель по индексу).
