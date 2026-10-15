@@ -785,31 +785,41 @@ UpdateClickableCache(t);
         // Построение кастомного узла со списком целей для switch/ping/flash.
         // Игра использует CheckForPlayerNameCommand(array[0], array[1]) —
         // array[1] матчится по имени GameObject цели (radarTargets[i].name).
+        //
+        // ПУНКТ 5: перехватываем ТОЛЬКО если >=2 целей.
+        // 0 или 1 цель → возвращаем null, чтобы игра обработала ванильно:
+        //   - switch 0/1 цель → ванильная страница "Switching radar cam view."
+        //   - ping/flash без радаров → ванильная страница товара "Radar-booster"
         internal static TerminalNode BuildTargetListNode(Terminal t, string cmd)
         {
             // Уничтожаем старый кастомный нод (ScriptableObject утекает)
             if (lastCustomNode != null) UnityEngine.Object.Destroy(lastCustomNode);
             lastCustomNode = null;
 
-            var entries = TerminalCursorPlugin.GetValidTargets(cmd);
+            var entries = GetValidTargets(cmd);
 
-            // ПУНКТ 5: 0 целей → не выполнять команду (возвращаем null)
-            if (entries.Length == 0)
+            // 0 или 1 цель → не перехватывать, пусть игра сделает ванильно
+            if (entries.Length < 2)
                 return null;
 
-            // ПУНКТ 5: 1 цель → выполнить напрямую (действуем сразу, возвращаем success-ноду)
-            if (entries.Length == 1)
-                return ExecuteTargetCommandWithIndex(t, cmd, entries[0].idx);
-
-            // >1 цель → строим список
+            // >=2 цели → строим список
             var sb = new StringBuilder();
-            // ПУНКТ 3: заголовок из config (RTLС)
-            if (cmd == "switch")
-                sb.AppendLine(cfgHeaderSwitch.Value);
-            else if (cmd == "ping")
-                sb.AppendLine(cfgHeaderPing.Value);
-            else
-                sb.AppendLine(cfgHeaderFlash.Value);
+            // ПУНКТ 1: берём заголовок ИЗ ИГРЫ — RTLC/XUnity уже знает эти строки
+            // и переведёт их автоматически при рендере (intercepts TMP_Text.text setter).
+            // specialNodes[20] = switch success node, [21] = ping, [23] = flash
+            string header = null;
+            var specialNodes = t.terminalNodes?.specialNodes;
+            if (cmd == "switch" && specialNodes != null && specialNodes.Count > 20)
+                header = specialNodes[20].displayText;
+            else if (cmd == "ping" && specialNodes != null && specialNodes.Count > 21)
+                header = specialNodes[21].displayText;
+            else if (cmd == "flash" && specialNodes != null && specialNodes.Count > 23)
+                header = specialNodes[23].displayText;
+            if (string.IsNullOrEmpty(header))
+                header = cmd == "switch" ? "Switching radar cam view."
+                      : cmd == "ping"  ? "Ping radar booster."
+                      : "Flash radar booster.";
+            sb.AppendLine(header);
             sb.AppendLine();
 
             customCmds.Clear();
@@ -823,7 +833,7 @@ UpdateClickableCache(t);
             for (int vi = 0; vi < entries.Length; vi++)
             {
                 var e = entries[vi];
-                // Команда: "switch Player 1" (без маркеров — для кликабельности)
+                // Команда БЕЗ маркеров — для кликабельности (parser expects "switch Player 0")
                 string rawLine = cmd + " " + e.name;
                 customCmds.Add(rawLine);
 
@@ -833,7 +843,7 @@ UpdateClickableCache(t);
                 if (e.isNonPlayer)
                     sb.Append("  " + cfgMarkRadar.Value);
 
-                // ПУНКТ 3: текущая цель помечена (current)
+                // Текущая цель помечена (current)
                 if (e.idx == curIdx)
                     sb.Append("  " + cfgMarkCurrent.Value);
 
@@ -1001,7 +1011,8 @@ UpdateClickableCache(t);
             if (cmd != "switch" && cmd != "ping" && cmd != "flash") return true;
 
             __result = TerminalCursorPlugin.BuildTargetListNode(__instance, cmd);
-            return false;
+            // null (0 или 1 цель) → пусть игра обработает ванильно
+            return __result == null;
         }
     }
 

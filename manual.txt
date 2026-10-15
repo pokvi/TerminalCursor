@@ -319,22 +319,41 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     Пример: ">VIEW MONITOR" в хелпе → подсвечивается целиком, клик отправляет
     "view monitor" → игра переключает камеру монитора.
 
-  - SWITCH/PING/FLASH — КЛИКАБЕЛЬНЫЕ СТРАНИЦЫ С ЦЕЛЯМИ (коммит d2403ee):
+  - SWITCH/PING/FLASH — КЛИКАБЕЛЬНЫЕ СТРАНИЦЫ С ЦЕЛЯМИ (коммит 56cafde):
     Теперь switch/ping/flash — кликабельные команды (в keyMap). При клике или
     вводе одиночного слова открывается динамическая страница со списком всех
     radarTargets (игроки + радары) в формате "> switch Player 0" и т.д.
     Текущая цель помечена "(current)". Каждая строка кликабельна: клик
     отправляет команду с аргументом для конкретной цели.
 
-    Реализация: Harmony-патч на ParsePlayerSentence перехватывает:
-    - одиночное слово → BuildTargetListNode (ScriptableObject с динамическим
-      текстом из StartOfRound.Instance.mapScreen.radarTargets)
-    - слово + аргумент → ExecuteTargetCommand: матчит цель по полному
-      нормализованному имени (Normalize + Replace("#","")), вызывает
-      MapScreen.SwitchRadarTargetAndSync / PingRadarBooster /
-      FlashRadarBooster напрямую (индекс таргета). Это обходит сломанный
-      CheckForPlayerNameCommand, который использует только array[1]
-      ("Player" совпадает с ПЕРВЫМ игроком, а не нужным).
+    Фильтрация (GetValidTargets):
+    - switch: connected players (isPlayerControlled + thisPlayerBody != null)
+      + radars (isNonPlayer=true). Пустые слоты игроков пропускаются.
+    - ping/flash: ТОЛЬКО radars (isNonPlayer). Игроки исключены.
+    - Если 1 цель → выполнить сразу (ExecuteTargetCommandWithIndex), без
+      списка. Если 0 целей → null (не выполнять, текст очищается).
+    - Только если >1 цель → строим TC_ страницу со списком.
+
+    Radar marks: не-игроки помечены "(radar)". Текущая цель помечена
+    "(current)". Команда в customCmds БЕЗ маркеров (switch Player 0,
+    switch Gilbert) — кликабельность не ломается.
+
+    RTLС-совместимость: все переводимые строки в BepInEx ConfigEntry:
+    HeaderSwitch="Switching radar cam view."
+    HeaderPing="Ping radar booster."
+    HeaderFlash="Flash radar booster."
+    MarkCurrent="(current)"
+    MarkRadar="(radar)"
+    Любой мод-переводчик (RTLC, XUnity.AutoTranslator, и др.) читает
+    файл BepInEx/config/TerminalCursor.cfg и перезаписывает значения.
+    Не нужен специальный API — стандартный BepInEx Config.
+
+    Harmony-патч на ParsePlayerSentence:
+    - single word -> BuildTargetListNode (dynamic ScriptableObject node)
+    - word + argument -> ExecuteTargetCommandWithIndex: ищем индекс цели
+      по нормализованному имени, вызываем MapScreen.SwitchRadarTargetAndSync
+      / PingRadarBooster / FlashRadarBooster напрямую. Обходим сломанный
+      CheckForPlayerNameCommand (матчит только array[1], "Player" -> 1-й игрок).
 
     ExecuteCommand для TC_ узлов заменяет весь текст (а не добавляет):
     устанавливает Terminal.modifyingText=true перед заменой, чтобы
@@ -350,9 +369,11 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     N-грамма pass 2 поднята до 4 слов (w+3) — для имён игроков из 3+ токенов.
     ping/flash добавлены в keyMap для подсветки на страницах хелпа.
     Проверено в логах:
-      click 'switch Player 0' -> SwitchedCam (камера игрока 0)
-      click 'switch Player 3' -> SwitchedCam (камера игрока 3)
-      click 'ping Player 0..3' -> PingedRadarBooster (конкретный радар)
+      click 'switch' -> SwitchedCam (1 цель, выполнена сразу)
+      click 'switch' -> TC_switch (2+ цели, список показан)
+      click 'switch Player 0' -> SwitchedCam (конкретная цель)
+      click 'switch Gilbert' -> SwitchedCam (по нику)
+      click 'ping' -> OtherCommands (0 целей, не выполнено)
 
   TRANSMIT: НЕТ в allKeywords. Только switch(array[0]).
       Требует [сообщение]. Не кликабельна.
