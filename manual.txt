@@ -319,18 +319,42 @@ cd D:\.code\pokvi_code\LethalCompany_TerminalCursor
     Пример: ">VIEW MONITOR" в хелпе → подсвечивается целиком, клик отправляет
     "view monitor" → игра переключает камеру монитора.
 
-  - SWITCH/PING/TRANSMIT/FLASH — РАЗБОР ПО ФАКТАМ ИЗ keyMap (286 ключей):
-    SWITCH: ЕСТЬ в allKeywords как noun keyword с specialKeywordResult.
-      Клик "switch" → CheckForExactSentences → specialKeywordResult →
-      узел "SwitchRadarCamPlayer 1" (страница с описанием и списком игроков).
-      Аргумент [имя игрока] опционален — без него показывает список.
-    EJECT: ЕСТЬ в allKeywords как noun keyword с specialKeywordResult.
-      Клик → катапультирование. Это ванильная команда.
-    FLASH: НЕТ в allKeywords. Только switch(array[0]) в ParsePlayerSentence.
-      Требует [имя радара]. Не кликабельна.
-    PING: НЕТ в allKeywords. Только switch(array[0]).
-      Требует [имя радара]. Не кликабельна.
-    TRANSMIT: НЕТ в allKeywords. Только switch(array[0]).
+  - SWITCH/PING/FLASH — КЛИКАБЕЛЬНЫЕ СТРАНИЦЫ С ЦЕЛЯМИ (коммит d2403ee):
+    Теперь switch/ping/flash — кликабельные команды (в keyMap). При клике или
+    вводе одиночного слова открывается динамическая страница со списком всех
+    radarTargets (игроки + радары) в формате "> switch Player 0" и т.д.
+    Текущая цель помечена "(current)". Каждая строка кликабельна: клик
+    отправляет команду с аргументом для конкретной цели.
+
+    Реализация: Harmony-патч на ParsePlayerSentence перехватывает:
+    - одиночное слово → BuildTargetListNode (ScriptableObject с динамическим
+      текстом из StartOfRound.Instance.mapScreen.radarTargets)
+    - слово + аргумент → ExecuteTargetCommand: матчит цель по полному
+      нормализованному имени (Normalize + Replace("#","")), вызывает
+      MapScreen.SwitchRadarTargetAndSync / PingRadarBooster /
+      FlashRadarBooster напрямую (индекс таргета). Это обходит сломанный
+      CheckForPlayerNameCommand, который использует только array[1]
+      ("Player" совпадает с ПЕРВЫМ игроком, а не нужным).
+
+    ExecuteCommand для TC_ узлов заменяет весь текст (а не добавляет):
+    устанавливает Terminal.modifyingText=true перед заменой, чтобы
+    TextChanged игры не восстановил старый текст узла (он делает
+    screenText.text = currentText когда textAdded < 0 — замена 150→15
+    символов даёт отрицательную разницу).
+
+    Имена целей: radarTargets[i].name = "Player #0".."Player #3" (LAN).
+    '#' убирается — RemovePunctuation игры его снимает, а при отправке
+    команды через ExecuteCommand # ломал textAdded (текст читался с
+    неправильной позиции: "itch player 3" вместо "switch Player 3").
+
+    N-грамма pass 2 поднята до 4 слов (w+3) — для имён игроков из 3+ токенов.
+    ping/flash добавлены в keyMap для подсветки на страницах хелпа.
+    Проверено в логах:
+      click 'switch Player 0' -> SwitchedCam (камера игрока 0)
+      click 'switch Player 3' -> SwitchedCam (камера игрока 3)
+      click 'ping Player 0..3' -> PingedRadarBooster (конкретный радар)
+
+  TRANSMIT: НЕТ в allKeywords. Только switch(array[0]).
       Требует [сообщение]. Не кликабельна.
     VIEW MONITOR: verb+noun пара. Глагол "view" имеет compatibleNouns
       со словом "monitor". Добавлен проход через compatibleNouns глаголов →
