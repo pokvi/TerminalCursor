@@ -518,10 +518,44 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             tc.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
         }
 
-    // Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
+        // Выполнение команды штатным путём: имитируем ввод слова и жмём OnSubmit.
+        // Для команд, требующих аргумент (info, view, TRANSMIT и др.), вместо
+        // выполнения просто вводим команду с пробелом в конец текста — пользователь
+        // дописывает аргумент и нажимает Enter сам.
         static void ExecuteCommand(Terminal t, string key)
         {
             if (t.screenText == null || string.IsNullOrEmpty(key)) return;
+
+            // Команды с обязательным аргументом: вводим текст, не выполняем.
+            // Игра не парсит такой глагол один (ParserError), поэтому клик только
+            // подставляет "info " в конец поля — пользователь дописывает аргумент
+            // и жмёт Enter сам.
+            string normKey = Normalize(key);
+            if (requiresArg.Contains(normKey))
+            {
+                string typed = key.EndsWith(" ") ? key : key + " ";
+                bool customNode = t.currentNode != null && t.currentNode.name.StartsWith("TC_");
+                string baseTextA = customNode ? "" : (t.currentText ?? t.screenText.text);
+                // Повторный клик по той же команде не должен плодить "info info ".
+                if (baseTextA.EndsWith(typed, StringComparison.OrdinalIgnoreCase)) return;
+                string newTextA = baseTextA + typed;
+
+                // Поле НЕ гасим: в нём сразу дописывают аргумент.
+                t.screenText.text = newTextA;
+                t.currentText = newTextA;
+                t.textAdded = typed.Length;
+                t.screenText.ActivateInputField();
+                t.screenText.stringPosition = newTextA.Length;
+                t.screenText.selectionStringFocusPosition = newTextA.Length;
+                t.screenText.ForceLabelUpdate();
+                lastText = null;
+                lastCharCount = -1;
+                lastVisLines = -1;
+                mls.LogInfo($"[TerminalCursor] type '{typed}' (needs arg) -> node '{(t.currentNode != null ? t.currentNode.name : "null")}'");
+                return;
+            }
+
+            // Штатное выполнение команды.
             string newText;
             // На кастомных узлах (TC_) заменяем весь текст командой, не добавляем.
             // Иначе клик на "> switch Player 1" даст "...switch Player 1switch Player 1"
@@ -631,6 +665,7 @@ UpdateClickableCache(t);
             if (nodeKey == cachedNodeKey) return;
             cachedNodeKey = nodeKey;
             keyMap.Clear();
+            requiresArg.Clear(); // Сброс: моды могут добавлять/убирать глаголы с compatibleNouns.
 
             // Кастомные узлы (TC_switch, TC_ping, TC_flash) — берём команды из customCmds
             if (nodeKey != null && nodeKey.StartsWith("TC_"))
@@ -660,10 +695,19 @@ UpdateClickableCache(t);
                 if (kw.isVerb)
                 {
                     // verb+noun пары: "view monitor", "inside cam" и т.д.
-                    if (kw.compatibleNouns != null)
+                    if (kw.compatibleNouns != null && kw.compatibleNouns.Length > 0)
+                    {
+                        // Глагол с совместимыми существительными — требует аргумент:
+                        // сам по себе игра не парсит (ParserError). Поэтому кликаем
+                        // и его тоже, но клик только ВВОДИТ "info " в поле ввода.
+                        // Дедуп в AddRange + самый длинный матчинг N-грамм не дают
+                        // одиночному "view" вытеснить фразу "view monitor".
+                        requiresArg.Add(Normalize(kw.word));
+                        AddKey(kw.word);
                         foreach (var c in kw.compatibleNouns)
                             if (c != null && c.noun != null && c.result != null && !string.IsNullOrEmpty(c.noun.word))
                                 AddKey(kw.word + " " + c.noun.word);
+                    }
                     continue;
                 }
                 // одиночное слово работает, если есть глагол по умолчанию
@@ -671,6 +715,11 @@ UpdateClickableCache(t);
                 if (kw.defaultVerb != null || kw.specialKeywordResult != null || kw.accessTerminalObjects)
                     AddKey(kw.word);
             }
+
+            // TRANSMIT — нет в allKeywords, но пользователь хочет кликабельность.
+            // Требует [сообщение], поэтому при клике просто вводим "TRANSMIT ".
+            AddKey("TRANSMIT ");
+            requiresArg.Add("transmit");
 
             // Добавляем ping/flash как кликабельные (их нет в allKeywords, но они есть
             // в хелпе страницы "Other commands" как команды с аргументами).
@@ -699,6 +748,11 @@ UpdateClickableCache(t);
             if (!ci.isVisible) return false;
             return !char.IsWhiteSpace(ci.character);
         }
+
+        // Команды, требующие аргумент: при клике не выполнять, а вводить текст
+        // в терминал (например "info ", "TRANSMIT "). Нормализованные (без пробелов,
+        // нижний регистр), как они хранятся в keyMap.
+        static readonly HashSet<string> requiresArg = new HashSet<string>();
 
         // ====================================================================
         //  Config-based translatable strings (RTLС-compatible).
@@ -806,19 +860,16 @@ UpdateClickableCache(t);
             if (entries.Length < 2)
                 return entries.Length > 0 ? ExecuteTargetCommandWithIndex(t, cmd, entries[0].idx) : null;
 
-            // >=2 цели → строим список
+            // > 1 цели → строим список
             var sb = new StringBuilder();
             // ПУНКТ 1: берём заголовок ИЗ ИГРЫ — RTLC/XUnity уже знает эти строки
             // и переведёт их автоматически при рендере (intercepts TMP_Text.text setter).
             // specialNodes[20] = switch success node, [21] = ping, [23] = flash
             string header = null;
             var specialNodes = t.terminalNodes?.specialNodes;
-            if (cmd == "switch" && specialNodes != null && specialNodes.Count > 20)
-                header = specialNodes[20].displayText;
-            else if (cmd == "ping" && specialNodes != null && specialNodes.Count > 21)
-                header = specialNodes[21].displayText;
-            else if (cmd == "flash" && specialNodes != null && specialNodes.Count > 23)
-                header = specialNodes[23].displayText;
+            var cmdId = cmd == "switch" ? 20 : cmd == "ping" ? 21 : 23;
+            if (specialNodes != null && specialNodes.Count > cmdId)
+                header = specialNodes[cmdId].displayText;
             if (string.IsNullOrEmpty(header))
                 header = cmd == "switch" ? "Switching radar cam view."
                       : cmd == "ping"  ? "Ping radar booster."

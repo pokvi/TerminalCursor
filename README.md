@@ -25,6 +25,19 @@ the caret always stays at the end of the text.
 
 # Releases
 
+### 1.0.2
+* Commands requiring an argument (info, view, route, buy, TRANSMIT, etc.) now
+  type the command with a trailing space into the input field instead of
+  executing it — the user finishes the argument and presses Enter themselves.
+  This prevents ParserError that the vanilla game gives when such a verb is
+  entered alone.
+* The verb itself (e.g. "info") is now clickable alongside full phrases
+  ("info shovel", "view monitor"). Double-clicking the same command is
+  ignored to avoid "info info " duplication.
+* Works with mod-added commands: any verb registered in `allKeywords` with
+  `isVerb = true` and a non-empty `compatibleNouns` list is automatically
+  treated as "requires argument".
+
 ### 1.0.1
 * Clickable switch/ping/flash target list pages: typing "switch" (or clicking
   it) opens a dynamic page with all radar targets (connected players + radar
