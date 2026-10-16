@@ -25,6 +25,22 @@ the caret always stays at the end of the text.
 
 # Releases
 
+### 1.0.1
+* Clickable switch/ping/flash target list pages: typing "switch" (or clicking
+  it) opens a dynamic page with all radar targets (connected players + radar
+  boosters). Each line is clickable — click "> switch Player 0" to switch
+  directly to that target.
+* Filtering: empty player slots (Player 1-3 who aren't playing) are hidden.
+  Only connected players (isPlayerControlled + thisPlayerBody) are shown.
+* Radar mark: non-player targets on the switch page are labelled "(radar)".
+  Current target is labelled "(current)".
+* ping/flash without radars: shows the Radar-booster item page (buy radar)
+  instead of a blank screen or ParserError.
+* Direct execution: 1 target → execute immediately (no list page).
+  2+ targets → show the clickable list.
+* RTLС-compatible: header text and labels stored in BepInEx ConfigEntry.
+  Any translator mod (RTLC, XUnity, etc.) reads .cfg and overwrites values.
+
 ### 1.0.0
 * Locked camera when in terminal
 * Fixed vanilla blinking caret (see Bug fixes)
