@@ -540,10 +540,39 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 if (baseTextA.EndsWith(typed, StringComparison.OrdinalIgnoreCase)) return;
                 string newTextA = baseTextA + typed;
 
-                // Поле НЕ гасим: в нём сразу дописывают аргумент.
-                t.screenText.text = newTextA;
-                t.currentText = newTextA;
-                t.textAdded = typed.Length;
+                if (customNode)
+                {
+                    // TC_: текст заменяется целиком (усыхает) — TextChanged игры
+                    // при textAdded < 0 вернул бы старый текст узла, поэтому
+                    // гасим его modifyingText и ставим всё вручную.
+                    var modField = t.GetType().GetField("modifyingText",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.Instance);
+                    if (modField != null) modField.SetValue(t, true);
+                    t.screenText.text = newTextA;
+                    t.currentText = newTextA;
+                    t.textAdded = typed.Length;
+                }
+                else
+                {
+                    // Обычный узел: НЕ трогаем currentText/textAdded руками.
+                    // Присвоение text вызывает TextChanged игры, который сам
+                    // сделает textAdded += typed.Length и currentText = newTextA.
+                    // Только так бэспейс стирает НАБРАННОЕ (в т.ч. несколько
+                    // кликов подряд "buy info ") вплоть до текста узла: ручная
+                    // подстановка currentText сворачивала ранее вставленное в
+                    // "базу" узла, и стереть его было нельзя.
+                    t.screenText.text = newTextA;
+                    // страховка: если onValueChanged не дёрнулся (редкость),
+                    // доводим состояние вручную, но только когда текст прижился.
+                    if (t.screenText.text == newTextA && t.currentText != newTextA)
+                    {
+                        t.currentText = newTextA;
+                        t.textAdded += typed.Length;
+                    }
+                }
+
+                // Поле активно: в нём сразу дописывают аргумент.
                 t.screenText.ActivateInputField();
                 t.screenText.stringPosition = newTextA.Length;
                 t.screenText.selectionStringFocusPosition = newTextA.Length;

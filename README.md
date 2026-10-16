@@ -31,6 +31,10 @@ the caret always stays at the end of the text.
   executing it — the user finishes the argument and presses Enter themselves.
   This prevents ParserError that the vanilla game gives when such a verb is
   entered alone.
+* The typed text is fully erasable with Backspace (all the way back to the
+  node text). Implemented by letting the game's own `Terminal.TextChanged`
+  track `textAdded`/`currentText` — setting them manually folded previously
+  inserted words into the node "baseline" and Backspace could not remove them.
 * The verb itself (e.g. "info") is now clickable alongside full phrases
   ("info shovel", "view monitor"). Double-clicking the same command is
   ignored to avoid "info info " duplication.
