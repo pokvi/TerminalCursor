@@ -753,9 +753,10 @@ UpdateClickableCache(t);
             // history — команда мода: подсвечиваем, если слово встретилось в тексте
             // (страницы модов-переводчиков/хоелп-аддонов).
             AddKey(HistoryWord);
-            // del/rem — сокращения для delete
+            // del/remove — сокращения для delete (минимум 3 символа)
             AddKey("del");
             AddKey("rem");
+            AddKey("remove");
         }
 
         // Ключ кладём под нормализованной формой (для сверки со словами экрана),
@@ -1520,9 +1521,9 @@ UpdateClickableCache(t);
                     }
                     // Если не нашли цель — пусть игра вернёт ParserError
                 }
-                // delete/del/rem <cmd> / ban <cmd> / unban <cmd> — управление историей
+                // delete/del/remove/rem <cmd> / ban <cmd> / unban <cmd> — управление историей
                 string lower0 = parts[0].ToLowerInvariant();
-                if (lower0 == "delete" || lower0 == "del" || lower0 == "rem") { TerminalCursorPlugin.HandleDelete(s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "delete" || lower0 == "del" || lower0 == "remove" || lower0 == "rem") { TerminalCursorPlugin.HandleDelete(s.Substring(parts[0].Length).Trim()); return false; }
                 if (lower0 == "ban")    { TerminalCursorPlugin.HandleBan(s.Substring(parts[0].Length).Trim()); return false; }
                 if (lower0 == "unban")  { TerminalCursorPlugin.HandleUnban(s.Substring(parts[0].Length).Trim()); return false; }
 
