@@ -997,7 +997,7 @@ UpdateClickableCache(t);
         static readonly Dictionary<string, HistoryEntry> history =
             new Dictionary<string, HistoryEntry>(StringComparer.Ordinal);
         static bool historyLoaded;
-        static string historyFile, bannedFile;
+        static string dataFile;
 
         // Забаненные нормализованные команды — не попадают в историю.
         static readonly HashSet<string> bannedWords = new HashSet<string>(StringComparer.Ordinal);
@@ -1038,10 +1038,11 @@ UpdateClickableCache(t);
             cfgUnbanSuccess = config.Bind("Strings", "UnbanSuccess", "Unbanned '{0}'.",
                 "Confirmation after 'unban <cmd>'");
 
-            historyFile = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.history.json");
-            bannedFile  = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.banned.json");
-            LoadHistory();
-            LoadBanned();
+            dataFile = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.json");
+            mls.LogInfo("[TerminalCursor] data: configPath=" + BepInEx.Paths.ConfigPath);
+            mls.LogInfo("[TerminalCursor] data: dataFile=" + dataFile);
+            LoadData();
+            mls.LogInfo("[TerminalCursor] data: loaded " + history.Count + " entries, " + bannedWords.Count + " banned");
         }
 
         // Нормализованное слово команды истории (для перехвата и подсветки).
@@ -1071,7 +1072,7 @@ UpdateClickableCache(t);
             // Забаненные — пропуск.
             if (bannedWords.Contains(raw.ToLowerInvariant())) return;
 
-            LoadHistory();
+            LoadData();
             string key = raw.ToLowerInvariant();
             HistoryEntry e;
             if (!history.TryGetValue(key, out e))
@@ -1082,7 +1083,7 @@ UpdateClickableCache(t);
             }
             e.Count++;
             e.LastTicks = DateTime.UtcNow.Ticks;
-            SaveHistory();
+            SaveData();
         }
 
         // Динамический узел TC_history: строки "> <команда>  [N]", кликабельные
@@ -1090,7 +1091,7 @@ UpdateClickableCache(t);
         internal static TerminalNode BuildHistoryNode(Terminal t)
 
         {
-            LoadHistory();
+            LoadData();
 
             var sorted = new List<HistoryEntry>(history.Values);
             sorted.Sort(delegate(HistoryEntry a, HistoryEntry b)
@@ -1197,54 +1198,96 @@ UpdateClickableCache(t);
 
         // Формат JSON: {"v":1,"e":[{"r":"<raw>","c":N,"t":<ticks>},...]}
 
-        static void LoadHistory()
+        // ==================================================================
+        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
+        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
+
+        // ==================================================================
+        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
+        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
+
+        // ==================================================================
+        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
+        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
+
+        static void LoadData()
         {
             if (historyLoaded) return;
             historyLoaded = true;
-            if (string.IsNullOrEmpty(historyFile) || !File.Exists(historyFile)) return;
+            if (string.IsNullOrEmpty(dataFile) || !File.Exists(dataFile)) return;
             try
             {
-                string json = File.ReadAllText(historyFile, Encoding.UTF8);
+                string json = File.ReadAllText(dataFile, Encoding.UTF8);
+                // Парсим массив e: [{"r":"...","c":N,"t":T},...]
                 int arrStart = json.IndexOf("\"e\"");
-                if (arrStart < 0) return;
-                arrStart = json.IndexOf('[', arrStart);
-                if (arrStart < 0) return;
-                int arrEnd = FindMatchingBracket(json, arrStart);
-                if (arrEnd < 0) return;
-                string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
-
-                int pos = 0;
-                while (pos < items.Length)
+                if (arrStart >= 0)
                 {
-                    int o = items.IndexOf('{', pos);
-                    if (o < 0) break;
-                    int c = items.IndexOf('}', o);
-                    if (c < 0) break;
-                    pos = c + 1;
-                    string obj = items.Substring(o + 1, c - o - 1);
-                    string raw = JsonReadStr(obj, "r");
-                    if (string.IsNullOrEmpty(raw)) continue;
-                    int count = JsonReadInt(obj, "c", 1);
-                    long ticks = JsonReadLong(obj, "t", 0);
-                    raw = CleanHistory(raw);
-                    if (raw.Length == 0) continue;
-                    history[raw.ToLowerInvariant()] = new HistoryEntry
+                    arrStart = json.IndexOf('[', arrStart);
+                    if (arrStart >= 0)
                     {
-                        Raw = raw,
-                        Count = Math.Max(1, count),
-                        LastTicks = ticks
-                    };
+                        int arrEnd = FindMatchingBracket(json, arrStart);
+                        if (arrEnd >= 0)
+                        {
+                            string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+                            int pos = 0;
+                            while (pos < items.Length)
+                            {
+                                int o = items.IndexOf('{', pos);
+                                if (o < 0) break;
+                                int c = items.IndexOf('}', o);
+                                if (c < 0) break;
+                                pos = c + 1;
+                                string obj = items.Substring(o + 1, c - o - 1);
+                                string raw = JsonReadStr(obj, "r");
+                                if (string.IsNullOrEmpty(raw)) continue;
+                                int count = JsonReadInt(obj, "c", 1);
+                                long ticks = JsonReadLong(obj, "t", 0);
+                                raw = CleanHistory(raw);
+                                if (raw.Length == 0) continue;
+                                history[raw.ToLowerInvariant()] = new HistoryEntry
+                                {
+                                    Raw = raw,
+                                    Count = Math.Max(1, count),
+                                    LastTicks = ticks
+                                };
+                            }
+                        }
+                    }
+                }
+                // Парсим массив b: ["ban1", "ban2"]
+                int bStart = json.IndexOf("\"b\"");
+                if (bStart >= 0)
+                {
+                    bStart = json.IndexOf('[', bStart);
+                    if (bStart >= 0)
+                    {
+                        int bEnd = FindMatchingBracket(json, bStart);
+                        if (bEnd >= 0)
+                        {
+                            string items = json.Substring(bStart + 1, bEnd - bStart - 1);
+                            int pos = 0;
+                            while (pos < items.Length)
+                            {
+                                int s = items.IndexOf('"', pos);
+                                if (s < 0) break;
+                                int e = items.IndexOf('"', s + 1);
+                                if (e < 0) break;
+                                pos = e + 1;
+                                bannedWords.Add(items.Substring(s + 1, e - s - 1).ToLowerInvariant());
+                            }
+                        }
+                    }
                 }
             }
             catch (Exception ex)
             {
-                mls.LogWarning("[TerminalCursor] history: failed to read file: " + ex.Message);
+                mls.LogWarning("[TerminalCursor] data: failed to read file: " + ex.Message);
             }
         }
 
-        static void SaveHistory()
+        static void SaveData()
         {
-            if (string.IsNullOrEmpty(historyFile)) return;
+            if (string.IsNullOrEmpty(dataFile)) return;
             try
             {
                 var sb = new StringBuilder();
@@ -1258,64 +1301,20 @@ UpdateClickableCache(t);
                       .Append(",\"c\":").Append(kv.Value.Count)
                       .Append(",\"t\":").Append(kv.Value.LastTicks).Append('}');
                 }
-                sb.Append("]}");
-                File.WriteAllText(historyFile, sb.ToString(), new UTF8Encoding(false));
-            }
-            catch (Exception ex)
-            {
-                mls.LogWarning("[TerminalCursor] history: failed to write file: " + ex.Message);
-            }
-        }
-
-        static void LoadBanned()
-        {
-            if (string.IsNullOrEmpty(bannedFile) || !File.Exists(bannedFile)) return;
-            try
-            {
-                string json = File.ReadAllText(bannedFile, Encoding.UTF8);
-                int arrStart = json.IndexOf('[');
-                if (arrStart < 0) return;
-                int arrEnd = FindMatchingBracket(json, arrStart);
-                if (arrEnd < 0) return;
-                string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
-
-                int pos = 0;
-                while (pos < items.Length)
-                {
-                    int s = items.IndexOf('"', pos);
-                    if (s < 0) break;
-                    int e = items.IndexOf('"', s + 1);
-                    if (e < 0) break;
-                    pos = e + 1;
-                    bannedWords.Add(items.Substring(s + 1, e - s - 1).ToLowerInvariant());
-                }
-            }
-            catch (Exception ex)
-            {
-                mls.LogWarning("[TerminalCursor] banned: failed to read: " + ex.Message);
-            }
-        }
-
-        static void SaveBanned()
-        {
-            if (string.IsNullOrEmpty(bannedFile)) return;
-            try
-            {
-                var sb = new StringBuilder();
-                sb.Append('[');
-                bool first = true;
+                sb.Append("],\"b\":[");
+                first = true;
                 foreach (string w in bannedWords)
                 {
                     if (!first) sb.Append(',');
                     first = false;
                     sb.Append(JsonQuote(w));
                 }
-                sb.Append(']');
-                File.WriteAllText(bannedFile, sb.ToString(), new UTF8Encoding(false));
+                sb.Append("]}");
+                File.WriteAllText(dataFile, sb.ToString(), new UTF8Encoding(false));
             }
             catch (Exception ex)
             {
-                mls.LogWarning("[TerminalCursor] banned: failed to write: " + ex.Message);
+                mls.LogWarning("[TerminalCursor] data: failed to write file: " + ex.Message);
             }
         }
 
@@ -1384,12 +1383,12 @@ UpdateClickableCache(t);
             {
                 switch (c)
                 {
-                    case '"':  sb.Append("\\\""); break;
-                    case '\\': sb.Append("\\\\"); break;
-                    case '\n': sb.Append("\\\n"); break;
-                    case '\r': sb.Append("\\\r"); break;
-                    case '\t': sb.Append("\\\t"); break;
-                    default:   sb.Append(c); break;
+                    case '"':  sb.Append('\\').Append('"'); break;
+                    case '\\': sb.Append('\\').Append('\\'); break;
+                    case '\n': sb.Append('\\').Append('n'); break;
+                    case '\r': sb.Append('\\').Append('r'); break;
+                    case '\t': sb.Append('\\').Append('t'); break;
+
                 }
             }
             sb.Append('"');
@@ -1402,11 +1401,11 @@ UpdateClickableCache(t);
         internal static void HandleDelete(string rawArg)
 
         {
-            LoadHistory();
+            LoadData();
             string norm = Normalize(rawArg).ToLowerInvariant();
             if (history.Remove(norm))
             {
-                SaveHistory();
+                SaveData();
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
             }
             else
@@ -1420,7 +1419,7 @@ UpdateClickableCache(t);
             string norm = Normalize(rawArg).ToLowerInvariant();
             if (bannedWords.Add(norm))
             {
-                SaveBanned();
+                SaveData();
                 mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> banned");
             }
             else
@@ -1434,7 +1433,7 @@ UpdateClickableCache(t);
             string norm = Normalize(rawArg).ToLowerInvariant();
             if (bannedWords.Remove(norm))
             {
-                SaveBanned();
+                SaveData();
                 mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> unbanned");
             }
             else
