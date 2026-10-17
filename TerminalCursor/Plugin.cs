@@ -4,6 +4,8 @@ using BepInEx.Logging;
 using GameNetcodeStuff;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Text;
 using HarmonyLib;
@@ -86,6 +88,7 @@ namespace TerminalCursor
             cfg = Config.Bind("Strings", "MarkRadar", "(radar)",
                 "Label for non-player radar targets");
             cfgMarkRadar = cfg;
+            InitHistory(Config);
 
 On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
             On.Terminal.QuitTerminal += Terminal_QuitTerminal;
@@ -173,6 +176,10 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
         // (MoveTextEnd не годится - он крутит caret-индексы по устаревшему textInfo).
         private void Terminal_OnSubmit(On.Terminal.orig_OnSubmit orig, Terminal self)
         {
+            // Пишем ДО orig: после парсинга игра обнуляет textAdded и заменяет
+            // текст узла - срезанная строка ввода потерялась бы. Так в историю
+            // попадают и неверные команды (пользователь их тоже вводил).
+            if (self != null && self.terminalInUse) RecordInput(self);
             orig(self);
             if (self == null || self.screenText == null || !self.terminalInUse) return;
             self.screenText.stringPosition = self.screenText.text.Length;
@@ -754,6 +761,9 @@ UpdateClickableCache(t);
             // в хелпе страницы "Other commands" как команды с аргументами).
             AddKey("ping");
             AddKey("flash");
+            // history — команда мода: подсвечиваем, если слово встретилось в тексте
+            // (страницы модов-переводчиков/хоелп-аддонов).
+            AddKey(HistoryWord);
         }
 
         // Ключ кладём под нормализованной формой (для сверки со словами экрана),
@@ -921,7 +931,7 @@ UpdateClickableCache(t);
                 string rawLine = cmd + " " + e.name;
                 customCmds.Add(rawLine);
 
-                sb.Append("> ").Append(rawLine);
+                sb.Append(">").Append(rawLine);
 
                 // ПУНКТ 3: пометка (radar) только для switch (ping/flash и так только радары)
                 if (cmd == "switch" && e.isNonPlayer)
@@ -968,6 +978,473 @@ UpdateClickableCache(t);
             return t.terminalNodes?.specialNodes != null && t.terminalNodes.specialNodes.Count > specialIdx
                 ? t.terminalNodes.specialNodes[specialIdx] : null;
         }
+
+        // ====================================================================
+        //  ИСТОРИЯ КОМАНД (команда history)
+        //
+        //  Пишется В ОДИН файл в BepInEx\config - один на установку игры, поэтому
+        //  счётчики общие для всех серверов/сохранений и живут между запусками.
+        //  Ключ записи - очищенная команда в нижнем регистре, значение - сырой
+        //  текст последнего ввода + счётчик. Сырой текст и отправляем в парсер
+        //  игры при клике по строке истории (customCmds -> ExecuteCommand).
+        // ====================================================================
+        static ConfigEntry<bool> cfgHistoryEnabled;
+        static ConfigEntry<int> cfgHistoryMaxEntries, cfgHistoryPageSize;
+        static ConfigEntry<string> cfgHistoryWord, cfgHistoryHeader, cfgHistoryEmpty;
+        static ConfigEntry<string> cfgHistoryCountFormat, cfgHistoryMore;
+        static ConfigEntry<string> cfgDeleteSuccess, cfgBanSuccess, cfgUnbanSuccess;
+
+        static readonly Dictionary<string, HistoryEntry> history =
+            new Dictionary<string, HistoryEntry>(StringComparer.Ordinal);
+        static bool historyLoaded;
+        static string historyFile, bannedFile;
+
+        // Забаненные нормализованные команды — не попадают в историю.
+        static readonly HashSet<string> bannedWords = new HashSet<string>(StringComparer.Ordinal);
+
+        // Защита от мусора: длина строки в истории и на экране.
+        const int HistoryMaxRawLength = 120;
+        const int HistoryDisplayLength = 46;
+
+        class HistoryEntry
+        {
+            public string Raw;        // как введено в последний раз
+            public int Count;         // сколько раз введено
+            public long LastTicks;    // время последнего ввода (тай-брейк)
+        }
+
+        static void InitHistory(BepInEx.Configuration.ConfigFile config)
+        {
+            cfgHistoryEnabled = config.Bind("History", "Enabled", true,
+                "Record every command typed/clicked in the terminal");
+            cfgHistoryMaxEntries = config.Bind("History", "MaxEntries", 200,
+                "Max number of distinct commands to keep");
+            cfgHistoryPageSize = config.Bind("History", "PageSize", 20,
+                "How many lines the 'history' page shows");
+            cfgHistoryWord = config.Bind("Strings", "HistoryWord", "history",
+                "Word that opens the command history page");
+            cfgHistoryHeader = config.Bind("Strings", "HistoryHeader", "Command history (most used first):",
+                "Header text of the command history page");
+            cfgHistoryEmpty = config.Bind("Strings", "HistoryEmpty", "No commands recorded yet.",
+                "Shown when the history is empty");
+            cfgHistoryCountFormat = config.Bind("Strings", "HistoryCountFormat", "[{0}]",
+                "Counter appended to every history line ({0} = times used)");
+            cfgHistoryMore = config.Bind("Strings", "HistoryMore", "(+{0} more)",
+                "Shown when the history does not fit on one page");
+            cfgDeleteSuccess = config.Bind("Strings", "DeleteSuccess", "Deleted '{0}' from history.",
+                "Confirmation after 'delete <cmd>'");
+            cfgBanSuccess = config.Bind("Strings", "BanSuccess", "Banned '{0}' (won't be recorded).",
+                "Confirmation after 'ban <cmd>'");
+            cfgUnbanSuccess = config.Bind("Strings", "UnbanSuccess", "Unbanned '{0}'.",
+                "Confirmation after 'unban <cmd>'");
+
+            historyFile = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.history.json");
+            bannedFile  = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.banned.json");
+            LoadHistory();
+            LoadBanned();
+        }
+
+        // Нормализованное слово команды истории (для перехвата и подсветки).
+        internal static string HistoryWord
+
+        {
+            get { return Normalize(cfgHistoryWord != null ? cfgHistoryWord.Value : "history"); }
+        }
+
+        // Срез последнего ввода (то же, что режет парсер игры) -> в историю.
+        static void RecordInput(Terminal t)
+        {
+            if (t.screenText == null || t.textAdded <= 0) return;
+            string text = t.screenText.text;
+            if (string.IsNullOrEmpty(text)) return;
+            string raw = text.Substring(Mathf.Max(0, text.Length - t.textAdded));
+            RecordHistory(raw);
+        }
+
+        static void RecordHistory(string rawInput)
+        {
+            if (cfgHistoryEnabled != null && !cfgHistoryEnabled.Value) return;
+            string raw = CleanHistory(rawInput);
+            if (raw.Length == 0) return;
+            // Сама команда истории не должна забивать историю и счётчики.
+            if (Normalize(raw) == HistoryWord) return;
+            // Забаненные — пропуск.
+            if (bannedWords.Contains(raw.ToLowerInvariant())) return;
+
+            LoadHistory();
+            string key = raw.ToLowerInvariant();
+            HistoryEntry e;
+            if (!history.TryGetValue(key, out e))
+            {
+                e = new HistoryEntry { Raw = raw };
+                history[key] = e;
+                TrimHistory();
+            }
+            e.Count++;
+            e.LastTicks = DateTime.UtcNow.Ticks;
+            SaveHistory();
+        }
+
+        // Динамический узел TC_history: строки "> <команда>  [N]", кликабельные
+        // через customCmds (сырой текст уходит в ExecuteCommand).
+        internal static TerminalNode BuildHistoryNode(Terminal t)
+
+        {
+            LoadHistory();
+
+            var sorted = new List<HistoryEntry>(history.Values);
+            sorted.Sort(delegate(HistoryEntry a, HistoryEntry b)
+            {
+                int c = b.Count.CompareTo(a.Count);
+                return c != 0 ? c : b.LastTicks.CompareTo(a.LastTicks);
+            });
+
+            customCmds.Clear();
+
+            var sb = new StringBuilder();
+            sb.AppendLine(cfgHistoryHeader.Value);
+            sb.AppendLine();
+
+            // Показываем сколько команд забанено
+            if (bannedWords.Count > 0)
+                sb.Append("Banned: ").Append(bannedWords.Count).AppendLine();
+
+            if (sorted.Count == 0)
+            {
+                sb.AppendLine(cfgHistoryEmpty.Value);
+            }
+            else
+            {
+                int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
+                int shown = Math.Min(page, sorted.Count);
+                for (int i = 0; i < shown; i++)
+                {
+                    HistoryEntry e = sorted[i];
+                    customCmds.Add(e.Raw);
+                    string disp = e.Raw.Length > HistoryDisplayLength
+                        ? e.Raw.Substring(0, HistoryDisplayLength - 3) + "..."
+                        : e.Raw;
+                    sb.Append(">").Append(disp).Append("  ")
+                      .Append(FormatHistoryCount(e.Count)).AppendLine();
+                }
+                if (sorted.Count > shown)
+                    sb.AppendLine(string.Format(cfgHistoryMore.Value, sorted.Count - shown));
+            }
+
+            var node = ScriptableObject.CreateInstance<TerminalNode>();
+            node.name = "TC_history";
+            node.displayText = sb.ToString();
+            node.clearPreviousText = true;
+
+            // Предыдущий кастомный узел - ScriptableObject, его надо уничтожить.
+            if (lastCustomNode != null) UnityEngine.Object.Destroy(lastCustomNode);
+            lastCustomNode = node;
+            cachedNodeKey = null;
+            return node;
+        }
+
+        static string FormatHistoryCount(int count)
+        {
+            string fmt = cfgHistoryCountFormat != null ? cfgHistoryCountFormat.Value : "[{0}]";
+            try { return string.Format(fmt, count); }
+            catch (FormatException) { return "[" + count + "]"; }
+        }
+
+        // Слово уже есть у игры (ванилла или другой мод)? Не перехватываем.
+        internal static bool VanillaKeywordExists(Terminal t, string normWord)
+
+        {
+            TerminalNodesList list = t != null ? t.terminalNodes : null;
+            if (list == null || list.allKeywords == null) return false;
+            foreach (TerminalKeyword kw in list.allKeywords)
+                if (kw != null && Normalize(kw.word) == normWord) return true;
+            return false;
+        }
+
+        // Пробелы -> один, префикс терминала ('> ') снимается, длина режется.
+        static string CleanHistory(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            var sb = new StringBuilder(s.Length);
+            bool needSpace = false;
+            foreach (char c in s)
+            {
+                if (char.IsWhiteSpace(c)) { needSpace = sb.Length > 0; continue; }
+                if (needSpace) { sb.Append(' '); needSpace = false; }
+                sb.Append(c);
+            }
+            string raw = sb.ToString().Trim('>', ' ');
+            if (raw.Length > HistoryMaxRawLength) raw = raw.Substring(0, HistoryMaxRawLength);
+            return raw;
+        }
+
+        // Сверх лимита выкидываем самые редкие (при равных - самые давние).
+        static void TrimHistory()
+        {
+            int max = cfgHistoryMaxEntries != null ? Math.Max(10, cfgHistoryMaxEntries.Value) : 200;
+            if (history.Count <= max) return;
+
+            var all = new List<HistoryEntry>(history.Values);
+            all.Sort(delegate(HistoryEntry a, HistoryEntry b)
+            {
+                int c = a.Count.CompareTo(b.Count);
+                return c != 0 ? c : a.LastTicks.CompareTo(b.LastTicks);
+            });
+            int drop = history.Count - max;
+            for (int i = 0; i < drop && i < all.Count; i++)
+                history.Remove(all[i].Raw.ToLowerInvariant());
+        }
+
+        // Формат JSON: {"v":1,"e":[{"r":"<raw>","c":N,"t":<ticks>},...]}
+
+        static void LoadHistory()
+        {
+            if (historyLoaded) return;
+            historyLoaded = true;
+            if (string.IsNullOrEmpty(historyFile) || !File.Exists(historyFile)) return;
+            try
+            {
+                string json = File.ReadAllText(historyFile, Encoding.UTF8);
+                int arrStart = json.IndexOf("\"e\"");
+                if (arrStart < 0) return;
+                arrStart = json.IndexOf('[', arrStart);
+                if (arrStart < 0) return;
+                int arrEnd = FindMatchingBracket(json, arrStart);
+                if (arrEnd < 0) return;
+                string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+
+                int pos = 0;
+                while (pos < items.Length)
+                {
+                    int o = items.IndexOf('{', pos);
+                    if (o < 0) break;
+                    int c = items.IndexOf('}', o);
+                    if (c < 0) break;
+                    pos = c + 1;
+                    string obj = items.Substring(o + 1, c - o - 1);
+                    string raw = JsonReadStr(obj, "r");
+                    if (string.IsNullOrEmpty(raw)) continue;
+                    int count = JsonReadInt(obj, "c", 1);
+                    long ticks = JsonReadLong(obj, "t", 0);
+                    raw = CleanHistory(raw);
+                    if (raw.Length == 0) continue;
+                    history[raw.ToLowerInvariant()] = new HistoryEntry
+                    {
+                        Raw = raw,
+                        Count = Math.Max(1, count),
+                        LastTicks = ticks
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                mls.LogWarning("[TerminalCursor] history: failed to read file: " + ex.Message);
+            }
+        }
+
+        static void SaveHistory()
+        {
+            if (string.IsNullOrEmpty(historyFile)) return;
+            try
+            {
+                var sb = new StringBuilder();
+                sb.Append("{\"v\":1,\"e\":[");
+                bool first = true;
+                foreach (KeyValuePair<string, HistoryEntry> kv in history)
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append("{\"r\":").Append(JsonQuote(kv.Value.Raw))
+                      .Append(",\"c\":").Append(kv.Value.Count)
+                      .Append(",\"t\":").Append(kv.Value.LastTicks).Append('}');
+                }
+                sb.Append("]}");
+                File.WriteAllText(historyFile, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                mls.LogWarning("[TerminalCursor] history: failed to write file: " + ex.Message);
+            }
+        }
+
+        static void LoadBanned()
+        {
+            if (string.IsNullOrEmpty(bannedFile) || !File.Exists(bannedFile)) return;
+            try
+            {
+                string json = File.ReadAllText(bannedFile, Encoding.UTF8);
+                int arrStart = json.IndexOf('[');
+                if (arrStart < 0) return;
+                int arrEnd = FindMatchingBracket(json, arrStart);
+                if (arrEnd < 0) return;
+                string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+
+                int pos = 0;
+                while (pos < items.Length)
+                {
+                    int s = items.IndexOf('"', pos);
+                    if (s < 0) break;
+                    int e = items.IndexOf('"', s + 1);
+                    if (e < 0) break;
+                    pos = e + 1;
+                    bannedWords.Add(items.Substring(s + 1, e - s - 1).ToLowerInvariant());
+                }
+            }
+            catch (Exception ex)
+            {
+                mls.LogWarning("[TerminalCursor] banned: failed to read: " + ex.Message);
+            }
+        }
+
+        static void SaveBanned()
+        {
+            if (string.IsNullOrEmpty(bannedFile)) return;
+            try
+            {
+                var sb = new StringBuilder();
+                sb.Append('[');
+                bool first = true;
+                foreach (string w in bannedWords)
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(JsonQuote(w));
+                }
+                sb.Append(']');
+                File.WriteAllText(bannedFile, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                mls.LogWarning("[TerminalCursor] banned: failed to write: " + ex.Message);
+            }
+        }
+
+        // Мини-JSON-хелперы.
+
+        // Найти закрывающую ] или } по открывающей [ или { (учёт вложенности и строк).
+        static int FindMatchingBracket(string json, int open)
+        {
+            char closing = json[open] == '[' ? ']' : '}';
+            int depth = 0, len = json.Length;
+            bool inStr = false;
+            for (int i = open; i < len; i++)
+            {
+                char c = json[i];
+                if (c == '\\' && inStr) { i++; continue; }
+                if (c == '"') inStr = !inStr;
+                if (inStr) continue;
+                if (c == '[' || c == '{') depth++;
+                else if (c == closing) { depth--; if (depth == 0) return i; }
+            }
+            return -1;
+        }
+
+        static string JsonReadStr(string obj, string key)
+        {
+            int k = obj.IndexOf('"' + key + '"');
+            if (k < 0) return "";
+            int s = obj.IndexOf('"', k + key.Length + 2);
+            if (s < 0) return "";
+            int e = obj.IndexOf('"', s + 1);
+            if (e < 0) return "";
+            return obj.Substring(s + 1, e - s - 1);
+        }
+
+        static int JsonReadInt(string obj, string key, int def)
+        {
+            int k = obj.IndexOf('"' + key + '"');
+            if (k < 0) return def;
+            int s = obj.IndexOf(':', k + key.Length + 1);
+            if (s < 0) return def;
+            int e = s + 1;
+            while (e < obj.Length && (char.IsDigit(obj[e]) || obj[e] == '-')) e++;
+            int val;
+            int.TryParse(obj.Substring(s + 1, e - s - 1), out val);
+            return val;
+        }
+
+        static long JsonReadLong(string obj, string key, long def)
+        {
+            int k = obj.IndexOf('"' + key + '"');
+            if (k < 0) return def;
+            int s = obj.IndexOf(':', k + key.Length + 1);
+            if (s < 0) return def;
+            int e = s + 1;
+            while (e < obj.Length && (char.IsDigit(obj[e]) || obj[e] == '-')) e++;
+            long val;
+            long.TryParse(obj.Substring(s + 1, e - s - 1), out val);
+            return val;
+        }
+
+        static string JsonQuote(string s)
+        {
+            var sb = new StringBuilder(s.Length + 2);
+            sb.Append('"');
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '"':  sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\n': sb.Append("\\\n"); break;
+                    case '\r': sb.Append("\\\r"); break;
+                    case '\t': sb.Append("\\\t"); break;
+                    default:   sb.Append(c); break;
+                }
+            }
+            sb.Append('"');
+            return sb.ToString();
+        }
+
+        // ==================================================================
+        //  Команды: delete <cmd> — удалить из истории, ban <cmd> — запретить
+        // ==================================================================
+        internal static void HandleDelete(string rawArg)
+
+        {
+            LoadHistory();
+            string norm = Normalize(rawArg).ToLowerInvariant();
+            if (history.Remove(norm))
+            {
+                SaveHistory();
+                mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
+            }
+            else
+            {
+                mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> not found");
+            }
+        }
+
+        internal static void HandleBan(string rawArg)
+        {
+            string norm = Normalize(rawArg).ToLowerInvariant();
+            if (bannedWords.Add(norm))
+            {
+                SaveBanned();
+                mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> banned");
+            }
+            else
+            {
+                mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> already banned");
+            }
+        }
+
+        internal static void HandleUnban(string rawArg)
+        {
+            string norm = Normalize(rawArg).ToLowerInvariant();
+            if (bannedWords.Remove(norm))
+            {
+                SaveBanned();
+                mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> unbanned");
+            }
+            else
+            {
+                mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> not banned");
+            }
+        }
+
+        // ==================================================================
+
 
         private static string BuildWord(TMP_TextInfo ti, int start, int end)
         {
@@ -1088,10 +1565,23 @@ UpdateClickableCache(t);
                     }
                     // Если не нашли цель — пусть игра вернёт ParserError
                 }
+                // delete <cmd> / ban <cmd> / unban <cmd> — управление историей
+                string lower0 = parts[0].ToLowerInvariant();
+                if (lower0 == "delete") { TerminalCursorPlugin.HandleDelete(s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "ban")    { TerminalCursorPlugin.HandleBan(s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "unban")  { TerminalCursorPlugin.HandleUnban(s.Substring(parts[0].Length).Trim()); return false; }
+
                 return true;
             }
 
             string cmd = parts[0].ToLowerInvariant();
+            // history: команда наша (у игры её нет) - показываем страницу истории.
+            if (cmd == TerminalCursorPlugin.HistoryWord &&
+                !TerminalCursorPlugin.VanillaKeywordExists(__instance, cmd))
+            {
+                __result = TerminalCursorPlugin.BuildHistoryNode(__instance);
+                return false;
+            }
             if (cmd != "switch" && cmd != "ping" && cmd != "flash") return true;
 
             __result = TerminalCursorPlugin.BuildTargetListNode(__instance, cmd);
