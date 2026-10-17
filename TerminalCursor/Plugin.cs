@@ -4,8 +4,8 @@ using BepInEx.Logging;
 using GameNetcodeStuff;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
+
 using System.Reflection;
 using System.Text;
 using HarmonyLib;
@@ -488,17 +488,6 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
             return '\0';
         }
 
-        static char FindNextVisibleChar(TMP_TextInfo ti, int idx)
-        {
-            for (int i = idx + 1; i < ti.characterCount; i++)
-            {
-                TMP_CharacterInfo ci = ti.characterInfo[i];
-                if (!ci.isVisible) continue;
-                return ci.character;
-            }
-            return '\0';
-        }
-
     static bool InRange(int i, int s, int e) { return i >= s && i <= e; }
 
     // Раскрашивает командные слова: канонические - ярко, прочие - приглушённо,
@@ -910,9 +899,9 @@ UpdateClickableCache(t);
             if (specialNodes != null && specialNodes.Count > cmdId)
                 header = specialNodes[cmdId].displayText;
             if (string.IsNullOrEmpty(header))
-                header = cmd == "switch" ? "Switching radar cam view."
-                      : cmd == "ping"  ? "Ping radar booster."
-                      : "Flash radar booster.";
+                header = cmd == "switch" ? cfgHeaderSwitch.Value
+                      : cmd == "ping"  ? cfgHeaderPing.Value
+                      : cfgHeaderFlash.Value;
             sb.AppendLine(header);
             sb.AppendLine();
 
@@ -1305,17 +1294,6 @@ UpdateClickableCache(t);
                 else if (c == closing) { depth--; if (depth == 0) return i; }
             }
             return -1;
-        }
-
-        static string JsonReadStr(string obj, string key)
-        {
-            int k = obj.IndexOf('"' + key + '"');
-            if (k < 0) return "";
-            int s = obj.IndexOf('"', k + key.Length + 2);
-            if (s < 0) return "";
-            int e = obj.IndexOf('"', s + 1);
-            if (e < 0) return "";
-            return obj.Substring(s + 1, e - s - 1);
         }
 
         static int JsonReadInt(string obj, string key, int def)
