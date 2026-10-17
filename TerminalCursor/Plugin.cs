@@ -1,4 +1,4 @@
-using BepInEx;
+﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using GameNetcodeStuff;
@@ -1008,9 +1008,8 @@ UpdateClickableCache(t);
 
         class HistoryEntry
         {
-            public string Raw;        // как введено в последний раз
-            public int Count;         // сколько раз введено
-            public long LastTicks;    // время последнего ввода (тай-брейк)
+            public int Count;
+            public long LastTicks;
         }
 
         static void InitHistory(BepInEx.Configuration.ConfigFile config)
@@ -1065,19 +1064,21 @@ UpdateClickableCache(t);
         static void RecordHistory(string rawInput)
         {
             if (cfgHistoryEnabled != null && !cfgHistoryEnabled.Value) return;
-            string raw = CleanHistory(rawInput);
-            if (raw.Length == 0) return;
-            // Сама команда истории не должна забивать историю и счётчики.
-            if (Normalize(raw) == HistoryWord) return;
-            // Забаненные — пропуск.
-            if (bannedWords.Contains(raw.ToLowerInvariant())) return;
+            if (rawInput == null) return;
+            // Ничего не вырезаем из ввода: только Trim и нижний регистр.
+            string key = rawInput.Trim().ToLowerInvariant();
+            if (key.Length == 0) return;
+            if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
+            // The 'history' command itself must not pollute the log.
+            if (key == HistoryWord) return;
+            // Banned commands are skipped.
+            if (bannedWords.Contains(key)) return;
 
             LoadData();
-            string key = raw.ToLowerInvariant();
             HistoryEntry e;
             if (!history.TryGetValue(key, out e))
             {
-                e = new HistoryEntry { Raw = raw };
+                e = new HistoryEntry();
                 history[key] = e;
                 TrimHistory();
             }
@@ -1089,15 +1090,14 @@ UpdateClickableCache(t);
         // Динамический узел TC_history: строки "> <команда>  [N]", кликабельные
         // через customCmds (сырой текст уходит в ExecuteCommand).
         internal static TerminalNode BuildHistoryNode(Terminal t)
-
         {
             LoadData();
 
-            var sorted = new List<HistoryEntry>(history.Values);
-            sorted.Sort(delegate(HistoryEntry a, HistoryEntry b)
+            var sorted = new List<KeyValuePair<string, HistoryEntry>>(history);
+            sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
             {
-                int c = b.Count.CompareTo(a.Count);
-                return c != 0 ? c : b.LastTicks.CompareTo(a.LastTicks);
+                int c = b.Value.Count.CompareTo(a.Value.Count);
+                return c != 0 ? c : b.Value.LastTicks.CompareTo(a.Value.LastTicks);
             });
 
             customCmds.Clear();
@@ -1106,7 +1106,6 @@ UpdateClickableCache(t);
             sb.AppendLine(cfgHistoryHeader.Value);
             sb.AppendLine();
 
-            // Показываем сколько команд забанено
             if (bannedWords.Count > 0)
                 sb.Append("Banned: ").Append(bannedWords.Count).AppendLine();
 
@@ -1120,13 +1119,13 @@ UpdateClickableCache(t);
                 int shown = Math.Min(page, sorted.Count);
                 for (int i = 0; i < shown; i++)
                 {
-                    HistoryEntry e = sorted[i];
-                    customCmds.Add(e.Raw);
-                    string disp = e.Raw.Length > HistoryDisplayLength
-                        ? e.Raw.Substring(0, HistoryDisplayLength - 3) + "..."
-                        : e.Raw;
+                    string cmd = sorted[i].Key;
+                    customCmds.Add(cmd);
+                    string disp = cmd.Length > HistoryDisplayLength
+                        ? cmd.Substring(0, HistoryDisplayLength - 3) + "..."
+                        : cmd;
                     sb.Append(">").Append(disp).Append("  ")
-                      .Append(FormatHistoryCount(e.Count)).AppendLine();
+                      .Append(FormatHistoryCount(sorted[i].Value.Count)).AppendLine();
                 }
                 if (sorted.Count > shown)
                     sb.AppendLine(string.Format(cfgHistoryMore.Value, sorted.Count - shown));
@@ -1137,7 +1136,6 @@ UpdateClickableCache(t);
             node.displayText = sb.ToString();
             node.clearPreviousText = true;
 
-            // Предыдущий кастомный узел - ScriptableObject, его надо уничтожить.
             if (lastCustomNode != null) UnityEngine.Object.Destroy(lastCustomNode);
             lastCustomNode = node;
             cachedNodeKey = null;
@@ -1162,53 +1160,22 @@ UpdateClickableCache(t);
             return false;
         }
 
-        // Пробелы -> один, префикс терминала ('> ') снимается, длина режется.
-        static string CleanHistory(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            var sb = new StringBuilder(s.Length);
-            bool needSpace = false;
-            foreach (char c in s)
-            {
-                if (char.IsWhiteSpace(c)) { needSpace = sb.Length > 0; continue; }
-                if (needSpace) { sb.Append(' '); needSpace = false; }
-                sb.Append(c);
-            }
-            string raw = sb.ToString().Trim('>', ' ');
-            if (raw.Length > HistoryMaxRawLength) raw = raw.Substring(0, HistoryMaxRawLength);
-            return raw;
-        }
-
         // Сверх лимита выкидываем самые редкие (при равных - самые давние).
         static void TrimHistory()
         {
             int max = cfgHistoryMaxEntries != null ? Math.Max(10, cfgHistoryMaxEntries.Value) : 200;
             if (history.Count <= max) return;
 
-            var all = new List<HistoryEntry>(history.Values);
-            all.Sort(delegate(HistoryEntry a, HistoryEntry b)
+            var all = new List<KeyValuePair<string, HistoryEntry>>(history);
+            all.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
             {
-                int c = a.Count.CompareTo(b.Count);
-                return c != 0 ? c : a.LastTicks.CompareTo(b.LastTicks);
+                int c = a.Value.Count.CompareTo(b.Value.Count);
+                return c != 0 ? c : a.Value.LastTicks.CompareTo(b.Value.LastTicks);
             });
             int drop = history.Count - max;
             for (int i = 0; i < drop && i < all.Count; i++)
-                history.Remove(all[i].Raw.ToLowerInvariant());
+                history.Remove(all[i].Key);
         }
-
-        // Формат JSON: {"v":1,"e":[{"r":"<raw>","c":N,"t":<ticks>},...]}
-
-        // ==================================================================
-        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
-        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
-
-        // ==================================================================
-        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
-        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
-
-        // ==================================================================
-        //  JSON-сериализация / парсинг (ручной, без внешних зависимостей)
-        //  TerminalCursor.json: {"v":1,"e":[...],"b":["ban1","ban2"]}
 
         static void LoadData()
         {
@@ -1218,35 +1185,38 @@ UpdateClickableCache(t);
             try
             {
                 string json = File.ReadAllText(dataFile, Encoding.UTF8);
-                // Парсим массив e: [{"r":"...","c":N,"t":T},...]
-                int arrStart = json.IndexOf("\"e\"");
-                if (arrStart >= 0)
+                int eStart = json.IndexOf("\"e\"");
+                if (eStart >= 0)
                 {
-                    arrStart = json.IndexOf('[', arrStart);
-                    if (arrStart >= 0)
+                    int braceStart = json.IndexOf('{', eStart);
+                    if (braceStart >= 0)
                     {
-                        int arrEnd = FindMatchingBracket(json, arrStart);
-                        if (arrEnd >= 0)
+                        int braceEnd = FindMatchingBracket(json, braceStart);
+                        if (braceEnd >= 0)
                         {
-                            string items = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
+                            string obj = json.Substring(braceStart + 1, braceEnd - braceStart - 1);
                             int pos = 0;
-                            while (pos < items.Length)
+                            while (pos < obj.Length)
                             {
-                                int o = items.IndexOf('{', pos);
-                                if (o < 0) break;
-                                int c = items.IndexOf('}', o);
-                                if (c < 0) break;
-                                pos = c + 1;
-                                string obj = items.Substring(o + 1, c - o - 1);
-                                string raw = JsonReadStr(obj, "r");
-                                if (string.IsNullOrEmpty(raw)) continue;
-                                int count = JsonReadInt(obj, "c", 1);
-                                long ticks = JsonReadLong(obj, "t", 0);
-                                raw = CleanHistory(raw);
-                                if (raw.Length == 0) continue;
-                                history[raw.ToLowerInvariant()] = new HistoryEntry
+                                int keyStart = obj.IndexOf('"', pos);
+                                if (keyStart < 0) break;
+                                int keyEnd = obj.IndexOf('"', keyStart + 1);
+                                if (keyEnd < 0) break;
+                                string key = obj.Substring(keyStart + 1, keyEnd - keyStart - 1);
+                                pos = keyEnd + 1;
+                                int colon = obj.IndexOf(':', pos);
+                                if (colon < 0) break;
+                                int valStart = obj.IndexOf('{', colon);
+                                if (valStart < 0) break;
+                                int valEnd = obj.IndexOf('}', valStart);
+                                if (valEnd < 0) break;
+                                pos = valEnd + 1;
+                                string valObj = obj.Substring(valStart + 1, valEnd - valStart - 1);
+                                int count = JsonReadInt(valObj, "c", 1);
+                                long ticks = JsonReadLong(valObj, "t", 0);
+                                if (key.Length == 0) continue;
+                                history[key.ToLowerInvariant()] = new HistoryEntry
                                 {
-                                    Raw = raw,
                                     Count = Math.Max(1, count),
                                     LastTicks = ticks
                                 };
@@ -1254,7 +1224,6 @@ UpdateClickableCache(t);
                         }
                     }
                 }
-                // Парсим массив b: ["ban1", "ban2"]
                 int bStart = json.IndexOf("\"b\"");
                 if (bStart >= 0)
                 {
@@ -1291,17 +1260,19 @@ UpdateClickableCache(t);
             try
             {
                 var sb = new StringBuilder();
-                sb.Append("{\"v\":1,\"e\":[");
+                sb.Append("{\"v\":1,\"e\":{");
                 bool first = true;
                 foreach (KeyValuePair<string, HistoryEntry> kv in history)
                 {
                     if (!first) sb.Append(',');
                     first = false;
-                    sb.Append("{\"r\":").Append(JsonQuote(kv.Value.Raw))
-                      .Append(",\"c\":").Append(kv.Value.Count)
-                      .Append(",\"t\":").Append(kv.Value.LastTicks).Append('}');
+                    sb.Append(JsonQuote(kv.Key))
+                      .Append(":{\"c\":")
+                      .Append(kv.Value.Count)
+                      .Append(",\"t\":").Append(kv.Value.LastTicks)
+                      .Append('}');
                 }
-                sb.Append("],\"b\":[");
+                sb.Append("},\"b\":[");
                 first = true;
                 foreach (string w in bannedWords)
                 {
@@ -1317,8 +1288,6 @@ UpdateClickableCache(t);
                 mls.LogWarning("[TerminalCursor] data: failed to write file: " + ex.Message);
             }
         }
-
-        // Мини-JSON-хелперы.
 
         // Найти закрывающую ] или } по открывающей [ или { (учёт вложенности и строк).
         static int FindMatchingBracket(string json, int open)
@@ -1388,6 +1357,7 @@ UpdateClickableCache(t);
                     case '\n': sb.Append('\\').Append('n'); break;
                     case '\r': sb.Append('\\').Append('r'); break;
                     case '\t': sb.Append('\\').Append('t'); break;
+                    default:   sb.Append(c); break;
 
                 }
             }
@@ -1399,11 +1369,12 @@ UpdateClickableCache(t);
         //  Команды: delete <cmd> — удалить из истории, ban <cmd> — запретить
         // ==================================================================
         internal static void HandleDelete(string rawArg)
-
         {
             LoadData();
-            string norm = Normalize(rawArg).ToLowerInvariant();
-            if (history.Remove(norm))
+            string key = rawArg.Trim().ToLowerInvariant();
+            if (key.Length == 0) return;
+            if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
+            if (history.Remove(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
@@ -1416,8 +1387,10 @@ UpdateClickableCache(t);
 
         internal static void HandleBan(string rawArg)
         {
-            string norm = Normalize(rawArg).ToLowerInvariant();
-            if (bannedWords.Add(norm))
+            string key = rawArg.Trim().ToLowerInvariant();
+            if (key.Length == 0) return;
+            if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
+            if (bannedWords.Add(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> banned");
@@ -1430,8 +1403,10 @@ UpdateClickableCache(t);
 
         internal static void HandleUnban(string rawArg)
         {
-            string norm = Normalize(rawArg).ToLowerInvariant();
-            if (bannedWords.Remove(norm))
+            string key = rawArg.Trim().ToLowerInvariant();
+            if (key.Length == 0) return;
+            if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
+            if (bannedWords.Remove(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> unbanned");

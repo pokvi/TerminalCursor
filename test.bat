@@ -93,7 +93,7 @@ ping -n 6 127.0.0.1 >nul
 set /a ELAPSED+=5
 tasklist /FI "IMAGENAME eq Lethal Company.exe" 2>nul | find /i "Lethal Company.exe" >nul
 if errorlevel 1 (
-    echo [TEST] game exited on its own after !ELAPSED! s - probably a crash
+    echo [TEST] game process gone after !ELAPSED! s, before WAIT=%WAIT% - closed by user or crashed; check logs below
     goto wait_done
 )
 goto loop
