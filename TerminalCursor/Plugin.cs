@@ -755,6 +755,7 @@ UpdateClickableCache(t);
             AddKey(HistoryWord);
             // del/remove — сокращения для delete (минимум 3 символа)
             AddKey("del");
+            AddKey("delete");
             AddKey("rem");
             AddKey("remove");
         }
@@ -1064,6 +1065,12 @@ UpdateClickableCache(t);
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
             // The 'history' command itself must not pollute the log.
             if (key == HistoryWord) return;
+            // Management commands must not pollute the log.
+            int sp = key.IndexOf(' ');
+            string firstWord = sp < 0 ? key : key.Substring(0, sp);
+            if (firstWord == "ban" || firstWord == "unban" ||
+                firstWord == "delete" || firstWord == "del" ||
+                firstWord == "remove" || firstWord == "rem") return;
             // Banned commands are skipped.
             if (bannedWords.Contains(key)) return;
 
