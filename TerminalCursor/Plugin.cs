@@ -1106,8 +1106,8 @@ UpdateClickableCache(t);
             cfgHistoryDateFormat = config.Bind("Strings", "HistoryDateFormat", "dd.MM.yyyy",
                 "DateTime format of the last-used date shown in history lines");
             cfgHistoryLineFormat = config.Bind("Strings", "HistoryLineFormat",
-                "№{3} >{0}  [{1}, {2}]  del {3} | ban {3}",
-                "One history line; {0}=command {1}=times used {2}=last-used date {3}=line number");
+                "{3}>{0}  [{1}, {2}]  del {4} | ban {4}",
+                "One history line; {0}=command {1}=times used {2}=last-used date {3}=padded number {4}=plain number");
             cfgHistoryMore = config.Bind("Strings", "HistoryMore", "(+{0} more)",
                 "Shown when the history does not fit on one page");
             cfgBannedLine = config.Bind("Strings", "HistoryBannedLine",
@@ -1118,8 +1118,8 @@ UpdateClickableCache(t);
             cfgBanEmpty = config.Bind("Strings", "BanListEmpty", "Nothing is banned. Use 'ban <cmd>'.",
                 "Shown when the ban list is empty");
             cfgBanLineFormat = config.Bind("Strings", "BanListLineFormat",
-                "№{1} >unban {0}",
-                "One ban list line; {0}=command {1}=line number");
+                "{1}>unban {0}",
+                "One ban list line; {0}=command {1}=padded number");
             cfgSortArrowAsc = config.Bind("Strings", "SortArrowAsc", "↑",
                 "Arrow shown for ascending sort (A-Z / oldest first)");
             cfgSortArrowDesc = config.Bind("Strings", "SortArrowDesc", "↓",
@@ -1303,20 +1303,29 @@ UpdateClickableCache(t);
             {
                 int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
                 int shown = Math.Min(page, sorted.Count);
+                // Длина номера для выравнивания: "№10 " vs "№1  "
+                int numWidth = (shown.ToString(CultureInfo.InvariantCulture) + " ").Length;
                 for (int i = 0; i < shown; i++)
                 {
                     string cmd = sorted[i].Key;
                     string num = (i + 1).ToString(CultureInfo.InvariantCulture);
+                    // Для отображения — с символом и пробелами.
+                    string numPad = "№" + num.PadRight(numWidth);
+                    // Для команд — только число.
+                    string numCmd = num;
                     customCmds.Add(cmd);
-                    customCmds.Add("del " + num);
-                    customCmds.Add("ban " + num);
+                    customCmds.Add("del " + numCmd);
+                    customCmds.Add("ban " + numCmd);
                     string date = FormatTicks(sorted[i].Value.LastTicks);
                     string cnt = sorted[i].Value.Count.ToString(CultureInfo.InvariantCulture);
                     // Одна строка: если TMP перенесёт её на вторую — не страшно,
                     // на TC_ страницах матчинг идёт по подстроке всего текста.
+                    // {3} — номер с № и выравниванием (левый столбец),
+                    // {4} — чистый номер: он же лежит в customCmds, поэтому
+                    // кнопки "del 1"/"ban 1" матчатся и кликабельны.
                     sb.AppendLine(SafeFormat(cfgHistoryLineFormat.Value,
-                        num + " >" + cmd + "  [" + cnt + ", " + date + "]  del " + num + " | ban " + num,
-                        cmd, cnt, date, num));
+                        numPad + ">" + cmd + "  [" + cnt + ", " + date + "]  del " + numCmd + " | ban " + numCmd,
+                        cmd, cnt, date, numPad, numCmd));
                 }
             if (sorted.Count > shown)
                     sb.AppendLine(string.Format(cfgHistoryMore.Value, sorted.Count - shown));
@@ -1367,16 +1376,19 @@ UpdateClickableCache(t);
                 list.Sort(StringComparer.Ordinal);
                 int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
                 int shown = Math.Min(page, list.Count);
+                // Длина номера для выравнивания
+                int numWidth = (shown.ToString(CultureInfo.InvariantCulture) + " ").Length;
                 for (int i = 0; i < shown; i++)
                 {
                     string w = list[i];
                     string num = (i + 1).ToString(CultureInfo.InvariantCulture);
+                    string numPad = "№" + num.PadRight(numWidth);
                     string disp = w.Length > HistoryDisplayLength - 14
                         ? w.Substring(0, HistoryDisplayLength - 17) + "..."
                         : w;
                     customCmds.Add("unban " + w);
                     sb.AppendLine(SafeFormat(cfgBanLineFormat.Value,
-                        "№" + num + " >unban " + disp, disp, num));
+                        numPad + ">unban " + disp, disp, numPad));
                 }
                 if (list.Count > shown)
                     sb.AppendLine(string.Format(cfgHistoryMore.Value, list.Count - shown));
@@ -1835,7 +1847,7 @@ UpdateClickableCache(t);
     //  Это нужно, потому что:
     //  - "switch" без аргумента → specialKeywordResult → статичная страница
     //    "Switching radar cam view." без списка целей;
-    //  - "ping" без аргумента → specialNodes[10] → "[There was no action
+    //  - "ping" без аргумента → specialNodes[10] → "[There was no actionhistoryhistory
     //    supplied with the word.]";
     //  - "flash" без аргумента → ParseWord("flash") → prefix-match →
     //    "flashlight" → страница покупки фонарика.
