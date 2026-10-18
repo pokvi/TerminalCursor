@@ -8,6 +8,7 @@ using System.IO;
 
 using System.Reflection;
 using System.Text;
+using System.Globalization;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
@@ -31,6 +32,7 @@ namespace TerminalCursor
         static string lastText;       // последняя строка (сигнатура раскладки)
         static int lastCharCount = -1; // символов в textInfo на прошлый кадр
         static int lastVisLines = -1; // видимых строк на прошлый кадр (typewriter)
+        static int lastVisibleCount = -1; // видимых символов на прошлый кадр
         static int hoverStart = -1;  // границы подсвеченного слова под курсором
         static int hoverEnd = -1;
         static readonly List<int> cmdStarts = new List<int>(); // границы всех командных слов
@@ -392,6 +394,17 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
         static void BuildCommandRanges(TMP_Text tc)
         {
             cmdStarts.Clear(); cmdEnds.Clear(); cmdCanonical.Clear(); cmdKeys.Clear();
+
+            // На своих страницах (TC_history/TC_bans) текст генерируем сами, и
+            // ключи известны точно (customCmds). Матчим их прямым поиском подстроки
+            // в тексте: перенос строки (wrap) TMP не мешает, фза "ban <cmd>"
+            // подсвечивается целиком даже разорванная на две визуальные строки.
+            if (onCustomNode)
+            {
+                BuildCustomNodeRanges(tc);
+                return;
+            }
+
             TMP_TextInfo ti = tc.textInfo;
             ParseDisplayNames(tc.text);
 
@@ -474,6 +487,42 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
                 if (bestRaw == null) continue;
                 char prev = FindPrevVisibleChar(ti, words[w].s);
                 AddRange(words[w].s, words[w].e, bestRaw, prev == '>' || prev == '"');
+            }
+        }
+
+        // Подсветка на страницах мода (TC_*): текст страницы генерируем сами,
+        // кликабельные строки known точно (customCmds). Ищем каждую команду как
+        // подстроку в тексте и проверяем границы слова (соседи не буква/цифра) —
+        // поэтому "ban" внутри "banned" не матчится, а "ban <cmd>" подсвечивается
+        // целиком даже когда TMP перенёс строку (у подстроки нет понятия строки).
+        static void BuildCustomNodeRanges(TMP_Text tc)
+        {
+            string text = tc.text;
+            if (string.IsNullOrEmpty(text)) return;
+
+            var keys = new List<string>(customCmds);
+            keys.Sort(delegate(string a, string b) { return b.Length.CompareTo(a.Length); });
+
+            var claimed = new bool[text.Length];
+            foreach (string key in keys)
+            {
+                if (string.IsNullOrEmpty(key)) continue;
+                int from = 0, idx;
+                while ((idx = text.IndexOf(key, from, StringComparison.Ordinal)) >= 0)
+                {
+                    from = idx + 1;
+                    int end = idx + key.Length - 1;
+                    if (claimed[idx]) continue;
+                    char before = idx > 0 ? text[idx - 1] : ' ';
+                    char after = end + 1 < text.Length ? text[end + 1] : ' ';
+                    if (char.IsLetterOrDigit(before) || char.IsLetterOrDigit(after)) continue;
+                    bool busy = false;
+                    for (int c = idx; c <= end; c++) if (claimed[c]) { busy = true; break; }
+                    if (busy) continue;
+                    for (int c = idx; c <= end; c++) claimed[c] = true;
+                    cmdStarts.Add(idx); cmdEnds.Add(end);
+                    cmdCanonical.Add(true); cmdKeys.Add(key);
+                }
             }
         }
 
@@ -652,11 +701,18 @@ UpdateClickableCache(t);
             // она происходит при любом изменении текста и typewriter-анимации.
             TMP_TextInfo ti = tc.textInfo;
             string txt = tc.text;
-            if (txt != lastText || ti.characterCount != lastCharCount || tc.maxVisibleLines != lastVisLines)
+            // Считаем видимые символы — при typewriter текст появляется побуквенно.
+            // isVisible меняется каждый кадр, а characterCount и maxVisibleLines — нет.
+            int vis = 0;
+            for (int i = 0; i < ti.characterCount; i++)
+                if (ti.characterInfo[i].isVisible) vis++;
+            if (txt != lastText || ti.characterCount != lastCharCount ||
+                tc.maxVisibleLines != lastVisLines || vis != lastVisibleCount)
             {
                 lastText = txt;
                 lastCharCount = ti.characterCount;
                 lastVisLines = tc.maxVisibleLines;
+                lastVisibleCount = vis;
                 BuildCommandRanges(tc);
             }
 
@@ -683,10 +739,17 @@ UpdateClickableCache(t);
         }
 
         // Кэш ключей: пересобираем при смене узла терминала.
+        // Разрешает матчинг фраз через перенос строки - только на наших страницах.
+        static bool onCustomNode;
+
         static void UpdateClickableCache(Terminal t)
         {
             TerminalNode cn = t.currentNode;
             string nodeKey = cn != null ? cn.name : "<null>";
+            // На своих страницах (TC_*) раскладку контролируем сами — разрешаем
+            // фразам переноситься через строку (TMP переносит длинные строки,
+            // и "ban <cmd>" рвётся, если матчинг требует одну строку).
+            onCustomNode = nodeKey != null && nodeKey.StartsWith("TC_");
             if (nodeKey == cachedNodeKey) return;
             cachedNodeKey = nodeKey;
             keyMap.Clear();
@@ -758,6 +821,9 @@ UpdateClickableCache(t);
             AddKey("delete");
             AddKey("rem");
             AddKey("remove");
+            // ban/unban — страницы банов
+            AddKey("ban");
+            AddKey("unban");
         }
 
         // Ключ кладём под нормализованной формой (для сверки со словами экрана),
@@ -985,8 +1051,8 @@ UpdateClickableCache(t);
         static ConfigEntry<bool> cfgHistoryEnabled;
         static ConfigEntry<int> cfgHistoryMaxEntries, cfgHistoryPageSize;
         static ConfigEntry<string> cfgHistoryWord, cfgHistoryHeader, cfgHistoryEmpty;
-        static ConfigEntry<string> cfgHistoryCountFormat, cfgHistoryMore;
-        static ConfigEntry<string> cfgDeleteSuccess, cfgBanSuccess, cfgUnbanSuccess;
+        static ConfigEntry<string> cfgHistoryDateFormat, cfgHistoryLineFormat, cfgHistoryMore;
+        static ConfigEntry<string> cfgBannedLine, cfgBanHeader, cfgBanEmpty, cfgBanLineFormat;
 
         static readonly Dictionary<string, HistoryEntry> history =
             new Dictionary<string, HistoryEntry>(StringComparer.Ordinal);
@@ -999,6 +1065,7 @@ UpdateClickableCache(t);
         // Защита от мусора: длина строки в истории и на экране.
         const int HistoryMaxRawLength = 120;
         const int HistoryDisplayLength = 46;
+        const int HistoryLineWidth = 65;
 
         class HistoryEntry
         {
@@ -1020,19 +1087,26 @@ UpdateClickableCache(t);
                 "Header text of the command history page");
             cfgHistoryEmpty = config.Bind("Strings", "HistoryEmpty", "No commands recorded yet.",
                 "Shown when the history is empty");
-            cfgHistoryCountFormat = config.Bind("Strings", "HistoryCountFormat", "[{0}]",
-                "Counter appended to every history line ({0} = times used)");
+            cfgHistoryDateFormat = config.Bind("Strings", "HistoryDateFormat", "dd.MM.yyyy",
+                "DateTime format of the last-used date shown in history lines");
+            cfgHistoryLineFormat = config.Bind("Strings", "HistoryLineFormat",
+                "№{3} >{0}  [{1}, {2}]  del {3} | ban {3}",
+                "One history line; {0}=command {1}=times used {2}=last-used date {3}=line number");
             cfgHistoryMore = config.Bind("Strings", "HistoryMore", "(+{0} more)",
                 "Shown when the history does not fit on one page");
-            cfgDeleteSuccess = config.Bind("Strings", "DeleteSuccess", "Deleted '{0}' from history.",
-                "Confirmation after 'delete <cmd>'");
-            cfgBanSuccess = config.Bind("Strings", "BanSuccess", "Banned '{0}' (won't be recorded).",
-                "Confirmation after 'ban <cmd>'");
-            cfgUnbanSuccess = config.Bind("Strings", "UnbanSuccess", "Unbanned '{0}'.",
-                "Confirmation after 'unban <cmd>'");
+            cfgBannedLine = config.Bind("Strings", "HistoryBannedLine",
+                "banned [{0}]  (open ban list)",
+                "Line on the history page; the word 'banned' opens the ban list ({0}=count)");
+            cfgBanHeader = config.Bind("Strings", "BanListHeader", "Banned commands (won't be recorded):",
+                "Header of the ban list page");
+            cfgBanEmpty = config.Bind("Strings", "BanListEmpty", "Nothing is banned. Use 'ban <cmd>'.",
+                "Shown when the ban list is empty");
+            cfgBanLineFormat = config.Bind("Strings", "BanListLineFormat",
+                "№{1} >unban {0}",
+                "One ban list line; {0}=command {1}=line number");
 
-            dataFile = Path.Combine(BepInEx.Paths.ConfigPath, "TerminalCursor.json");
-            mls.LogInfo("[TerminalCursor] data: configPath=" + BepInEx.Paths.ConfigPath);
+            dataFile = Path.Combine(Paths.ConfigPath, "TerminalCursor.json");
+            mls.LogInfo("[TerminalCursor] data: configPath=" + Paths.ConfigPath);
             mls.LogInfo("[TerminalCursor] data: dataFile=" + dataFile);
             LoadData();
             mls.LogInfo("[TerminalCursor] data: loaded " + history.Count + " entries, " + bannedWords.Count + " banned");
@@ -1087,18 +1161,48 @@ UpdateClickableCache(t);
             SaveData();
         }
 
-        // Динамический узел TC_history: строки "> <команда>  [N]", кликабельные
-        // через customCmds (сырой текст уходит в ExecuteCommand).
-        internal static TerminalNode BuildHistoryNode(Terminal t)
+        // История, отсортированная для показа: c↓, t↓, затем ключ↑.
+        // Третий тай-брейк обязателен: номера строк использует команда
+        // "del <номер>" / "ban <номер>", и при равных c и t порядок не должен
+        // гулять между перерисовками страницы.
+        static List<KeyValuePair<string, HistoryEntry>> GetSortedHistory()
         {
-            LoadData();
-
             var sorted = new List<KeyValuePair<string, HistoryEntry>>(history);
             sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
             {
                 int c = b.Value.Count.CompareTo(a.Value.Count);
-                return c != 0 ? c : b.Value.LastTicks.CompareTo(a.Value.LastTicks);
+                if (c != 0) return c;
+                c = b.Value.LastTicks.CompareTo(a.Value.LastTicks);
+                if (c != 0) return c;
+                return string.CompareOrdinal(a.Key, b.Key);
             });
+            return sorted;
+        }
+
+        // Аргумент del/ban/unban: либо номер строки истории ("2"), либо сама
+        // команда ("buy shovel"). Номер резолвится по той же сортировке, что и
+        // страница, поэтому "del 2" == клик по "del" во второй строке.
+        static string ResolveHistoryArg(string rawArg)
+        {
+            if (string.IsNullOrEmpty(rawArg)) return rawArg;
+            int num;
+            if (!int.TryParse(rawArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out num))
+                return rawArg;
+            if (num < 1) return rawArg;
+            var sorted = GetSortedHistory();
+            if (num > sorted.Count) return rawArg;
+            return sorted[num - 1].Key;
+        }
+
+        // Динамический узел TC_history: строки
+        // "№N > <команда>  [N, дата]  del N | ban N".
+        // Клик по команде выполняет её; клик по "del N" / "ban N" удаляет /
+        // банит её и сразу перерисовывает страницу (хендлеры возвращают узел).
+        internal static TerminalNode BuildHistoryNode(Terminal t)
+        {
+            LoadData();
+
+            var sorted = GetSortedHistory();
 
             customCmds.Clear();
 
@@ -1107,7 +1211,11 @@ UpdateClickableCache(t);
             sb.AppendLine();
 
             if (bannedWords.Count > 0)
-                sb.Append("Banned: ").Append(bannedWords.Count).AppendLine();
+            {
+                sb.AppendLine(SafeFormat(cfgBannedLine.Value,
+                    "banned [" + bannedWords.Count + "]  (open ban list)", bannedWords.Count));
+                sb.AppendLine();
+            }
 
             if (sorted.Count == 0)
             {
@@ -1120,15 +1228,28 @@ UpdateClickableCache(t);
                 for (int i = 0; i < shown; i++)
                 {
                     string cmd = sorted[i].Key;
+                    string num = (i + 1).ToString(CultureInfo.InvariantCulture);
                     customCmds.Add(cmd);
-                    string disp = cmd.Length > HistoryDisplayLength
-                        ? cmd.Substring(0, HistoryDisplayLength - 3) + "..."
-                        : cmd;
-                    sb.Append(">").Append(disp).Append("  ")
-                      .Append(FormatHistoryCount(sorted[i].Value.Count)).AppendLine();
+                    customCmds.Add("del " + num);
+                    customCmds.Add("ban " + num);
+                    string date = FormatTicks(sorted[i].Value.LastTicks);
+                    string cnt = sorted[i].Value.Count.ToString(CultureInfo.InvariantCulture);
+                    // Одна строка: если TMP перенесёт её на вторую — не страшно,
+                    // на TC_ страницах матчинг идёт по подстроке всего текста.
+                    sb.AppendLine(SafeFormat(cfgHistoryLineFormat.Value,
+                        num + " >" + cmd + "  [" + cnt + ", " + date + "]  del " + num + " | ban " + num,
+                        cmd, cnt, date, num));
                 }
-                if (sorted.Count > shown)
+            if (sorted.Count > shown)
                     sb.AppendLine(string.Format(cfgHistoryMore.Value, sorted.Count - shown));
+            }
+
+            // Слово 'ban' из строки "banned [N] (open ban list)" должно быть
+            // кликабельным -> страница банов. keyMap на TC_ нодах строится только
+            // из customCmds, поэтому добавляем его сюда.
+            if (bannedWords.Count > 0)
+            {
+                customCmds.Add("ban");
             }
 
             var node = ScriptableObject.CreateInstance<TerminalNode>();
@@ -1142,11 +1263,71 @@ UpdateClickableCache(t);
             return node;
         }
 
-        static string FormatHistoryCount(int count)
+        // Динамический узел TC_bans: список забаненных команд.
+        // Клик по "unban <команда>" разбанивает и перерисовывает список.
+        internal static TerminalNode BuildBanListNode(Terminal t)
         {
-            string fmt = cfgHistoryCountFormat != null ? cfgHistoryCountFormat.Value : "[{0}]";
-            try { return string.Format(fmt, count); }
-            catch (FormatException) { return "[" + count + "]"; }
+            LoadData();
+            customCmds.Clear();
+
+            var sb = new StringBuilder();
+            sb.AppendLine(cfgBanHeader.Value);
+            sb.AppendLine();
+
+            // Возврат к истории — вверху списка, кликабельно.
+            customCmds.Add(HistoryWord);
+            sb.AppendLine(">history  (back to history)");
+            sb.AppendLine();
+
+            if (bannedWords.Count == 0)
+            {
+                sb.AppendLine(cfgBanEmpty.Value);
+            }
+            else
+            {
+                var list = new List<string>(bannedWords);
+                list.Sort(StringComparer.Ordinal);
+                int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
+                int shown = Math.Min(page, list.Count);
+                for (int i = 0; i < shown; i++)
+                {
+                    string w = list[i];
+                    string num = (i + 1).ToString(CultureInfo.InvariantCulture);
+                    string disp = w.Length > HistoryDisplayLength - 14
+                        ? w.Substring(0, HistoryDisplayLength - 17) + "..."
+                        : w;
+                    customCmds.Add("unban " + w);
+                    sb.AppendLine(SafeFormat(cfgBanLineFormat.Value,
+                        "№" + num + " >unban " + disp, disp, num));
+                }
+                if (list.Count > shown)
+                    sb.AppendLine(string.Format(cfgHistoryMore.Value, list.Count - shown));
+            }
+
+            var node = ScriptableObject.CreateInstance<TerminalNode>();
+            node.name = "TC_bans";
+            node.displayText = sb.ToString();
+            node.clearPreviousText = true;
+
+            if (lastCustomNode != null) UnityEngine.Object.Destroy(lastCustomNode);
+            lastCustomNode = node;
+            cachedNodeKey = null;
+            return node;
+        }
+
+        // string.Format с падением на безопасный вариант (конфиг правят руками).
+        static string SafeFormat(string fmt, string fallback, params object[] args)
+        {
+            try { return string.Format(fmt, args); }
+            catch (FormatException) { return fallback; }
+            catch (IndexOutOfRangeException) { return fallback; }
+        }
+
+        static string FormatTicks(long ticks)
+        {
+            string fmt = cfgHistoryDateFormat != null ? cfgHistoryDateFormat.Value : "dd.MM";
+            try { return new DateTime(ticks, DateTimeKind.Utc).ToString(fmt); }
+            catch (FormatException) { return ""; }
         }
 
         // Слово уже есть у игры (ванилла или другой мод)? Не перехватываем.
@@ -1355,15 +1536,20 @@ UpdateClickableCache(t);
         }
 
         // ==================================================================
-        //  Команды: delete <cmd> — удалить из истории, ban <cmd> — запретить
+        //  Команды: delete/del/remove/rem <cmd> — удалить из истории,
+        //  ban <cmd> — запретить (удаляет из истории сразу, перестанет
+        //  записываться в дальнейшем).
+        //  Возвращают свежую страницу (history/список банов) — терминал
+        //  сразу показывает обновлённый список.
+        //  Аргумент может быть номером строки ("2") или самой командой.
         // ==================================================================
-        internal static void HandleDelete(string rawArg)
+        internal static TerminalNode HandleDelete(Terminal t, string rawArg)
         {
             LoadData();
             string key = rawArg.Trim().ToLowerInvariant();
-            if (key.Length == 0) return;
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
-            if (history.Remove(key))
+            if (key.Length > 0) key = ResolveHistoryArg(key);
+            if (key.Length > 0 && history.Remove(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
@@ -1372,30 +1558,39 @@ UpdateClickableCache(t);
             {
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> not found");
             }
+            return BuildHistoryNode(t);
         }
 
-        internal static void HandleBan(string rawArg)
+        // ban удаляет команду из истории и запрещает ей появляться в дальнейшем.
+        internal static TerminalNode HandleBan(Terminal t, string rawArg)
         {
+            LoadData();
             string key = rawArg.Trim().ToLowerInvariant();
-            if (key.Length == 0) return;
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
-            if (bannedWords.Add(key))
+            if (key.Length > 0) key = ResolveHistoryArg(key);
+            if (key.Length > 0)
             {
-                SaveData();
-                mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> banned");
+                history.Remove(key); // Удаляем из истории сразу.
+                if (bannedWords.Add(key))
+                {
+                    SaveData();
+                    mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> banned");
+                }
+                else
+                {
+                    mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> already banned");
+                }
             }
-            else
-            {
-                mls.LogInfo("[TerminalCursor] ban '" + rawArg + "' -> already banned");
-            }
+            return BuildHistoryNode(t);
         }
 
-        internal static void HandleUnban(string rawArg)
+        internal static TerminalNode HandleUnban(Terminal t, string rawArg)
         {
+            LoadData();
             string key = rawArg.Trim().ToLowerInvariant();
-            if (key.Length == 0) return;
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
-            if (bannedWords.Remove(key))
+            if (key.Length > 0) key = ResolveHistoryArg(key);
+            if (key.Length > 0 && bannedWords.Remove(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> unbanned");
@@ -1404,6 +1599,7 @@ UpdateClickableCache(t);
             {
                 mls.LogInfo("[TerminalCursor] unban '" + rawArg + "' -> not banned");
             }
+            return BuildBanListNode(t);
         }
 
         // ==================================================================
@@ -1528,11 +1724,16 @@ UpdateClickableCache(t);
                     }
                     // Если не нашли цель — пусть игра вернёт ParserError
                 }
-                // delete/del/remove/rem <cmd> / ban <cmd> / unban <cmd> — управление историей
+                // delete/del/remove/rem <cmd> / ban <cmd> / unban <cmd> — управление
+                // историей. Хендлер возвращает свежую страницу (history/bans) —
+                // терминал сразу показывает обновлённый список.
                 string lower0 = parts[0].ToLowerInvariant();
-                if (lower0 == "delete" || lower0 == "del" || lower0 == "remove" || lower0 == "rem") { TerminalCursorPlugin.HandleDelete(s.Substring(parts[0].Length).Trim()); return false; }
-                if (lower0 == "ban")    { TerminalCursorPlugin.HandleBan(s.Substring(parts[0].Length).Trim()); return false; }
-                if (lower0 == "unban")  { TerminalCursorPlugin.HandleUnban(s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "delete" || lower0 == "del" || lower0 == "remove" || lower0 == "rem")
+                { __result = TerminalCursorPlugin.HandleDelete(__instance, s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "ban")
+                { __result = TerminalCursorPlugin.HandleBan(__instance, s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "unban")
+                { __result = TerminalCursorPlugin.HandleUnban(__instance, s.Substring(parts[0].Length).Trim()); return false; }
 
                 return true;
             }
@@ -1540,6 +1741,20 @@ UpdateClickableCache(t);
             string cmd = parts[0].ToLowerInvariant();
             // history: команда наша (у игры её нет) - показываем страницу истории.
             if (cmd == TerminalCursorPlugin.HistoryWord &&
+                !TerminalCursorPlugin.VanillaKeywordExists(__instance, cmd))
+            {
+                __result = TerminalCursorPlugin.BuildHistoryNode(__instance);
+                return false;
+            }
+            // ban/unban без аргумента -> страница со списком забаненных команд.
+            if ((cmd == "ban" || cmd == "unban") &&
+                !TerminalCursorPlugin.VanillaKeywordExists(__instance, cmd))
+            {
+                __result = TerminalCursorPlugin.BuildBanListNode(__instance);
+                return false;
+            }
+            // delete/del/remove/rem без аргумента -> обновлённая страница истории.
+            if ((cmd == "delete" || cmd == "del" || cmd == "remove" || cmd == "rem") &&
                 !TerminalCursorPlugin.VanillaKeywordExists(__instance, cmd))
             {
                 __result = TerminalCursorPlugin.BuildHistoryNode(__instance);
