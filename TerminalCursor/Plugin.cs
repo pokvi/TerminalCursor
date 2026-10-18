@@ -1053,11 +1053,27 @@ UpdateClickableCache(t);
         static ConfigEntry<string> cfgHistoryWord, cfgHistoryHeader, cfgHistoryEmpty;
         static ConfigEntry<string> cfgHistoryDateFormat, cfgHistoryLineFormat, cfgHistoryMore;
         static ConfigEntry<string> cfgBannedLine, cfgBanHeader, cfgBanEmpty, cfgBanLineFormat;
+        static ConfigEntry<string> cfgSortArrowAsc, cfgSortArrowDesc;
+        static ConfigEntry<string> cfgSortLine, cfgSortCurrent;
 
         static readonly Dictionary<string, HistoryEntry> history =
             new Dictionary<string, HistoryEntry>(StringComparer.Ordinal);
         static bool historyLoaded;
         static string dataFile;
+
+        // Порядок ключей = порядок их записи в JSON ("e"). Даёт фильтр
+        // "sort time" (первым был использован тот, что в файле выше).
+        // Пишем файл строго в этом порядке, поэтому порядок НЕ зависит от
+        // внутреннего обхода Dictionary (который после удаления ключа мог бы
+        // поставить новый ключ в освободившийся слот, то есть в середину).
+        static readonly List<string> historyOrder = new List<string>();
+
+        // Режим и направление сортировки страницы истории. Живёт пока открыт
+        // терминал; "sort <режим>" переключает режим, повторный клик по тому же
+        // режиму разворачивает направление.
+        internal enum HistorySort { Count, Date, Alphabet, Time }
+        static HistorySort historySort = HistorySort.Count;
+        static bool historySortAsc;
 
         // Забаненные нормализованные команды — не попадают в историю.
         static readonly HashSet<string> bannedWords = new HashSet<string>(StringComparer.Ordinal);
@@ -1104,6 +1120,14 @@ UpdateClickableCache(t);
             cfgBanLineFormat = config.Bind("Strings", "BanListLineFormat",
                 "№{1} >unban {0}",
                 "One ban list line; {0}=command {1}=line number");
+            cfgSortArrowAsc = config.Bind("Strings", "SortArrowAsc", "↑",
+                "Arrow shown for ascending sort (A-Z / oldest first)");
+            cfgSortArrowDesc = config.Bind("Strings", "SortArrowDesc", "↓",
+                "Arrow shown for descending sort (Z-A / newest first)");
+            cfgSortLine = config.Bind("Strings", "SortLine", "sort: {0}",
+                "Clickable sort buttons line on the history page ({0}=buttons)");
+            cfgSortCurrent = config.Bind("Strings", "SortCurrent", "current: {0} {1}",
+                "Current sort indicator ({0}=mode {1}=arrow), not clickable");
 
             dataFile = Path.Combine(Paths.ConfigPath, "TerminalCursor.json");
             mls.LogInfo("[TerminalCursor] data: configPath=" + Paths.ConfigPath);
@@ -1144,7 +1168,8 @@ UpdateClickableCache(t);
             string firstWord = sp < 0 ? key : key.Substring(0, sp);
             if (firstWord == "ban" || firstWord == "unban" ||
                 firstWord == "delete" || firstWord == "del" ||
-                firstWord == "remove" || firstWord == "rem") return;
+                firstWord == "remove" || firstWord == "rem" ||
+                firstWord == "sort") return;
             // Banned commands are skipped.
             if (bannedWords.Contains(key)) return;
 
@@ -1154,6 +1179,7 @@ UpdateClickableCache(t);
             {
                 e = new HistoryEntry();
                 history[key] = e;
+                historyOrder.Add(key);
                 TrimHistory();
             }
             e.Count++;
@@ -1161,21 +1187,69 @@ UpdateClickableCache(t);
             SaveData();
         }
 
-        // История, отсортированная для показа: c↓, t↓, затем ключ↑.
-        // Третий тай-брейк обязателен: номера строк использует команда
-        // "del <номер>" / "ban <номер>", и при равных c и t порядок не должен
-        // гулять между перерисовками страницы.
+        // Удаление команды из истории: из словаря и из порядка.
+        static bool RemoveHistoryKey(string key)
+        {
+            bool removed = history.Remove(key);
+            historyOrder.Remove(key);
+            return removed;
+        }
+
+        // История, отсортированная для показа: по заданному режиму и направлению.
+        // "time" — порядок ключей из JSON (первой регистрации).
         static List<KeyValuePair<string, HistoryEntry>> GetSortedHistory()
         {
             var sorted = new List<KeyValuePair<string, HistoryEntry>>(history);
-            sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+            switch (historySort)
             {
-                int c = b.Value.Count.CompareTo(a.Value.Count);
-                if (c != 0) return c;
-                c = b.Value.LastTicks.CompareTo(a.Value.LastTicks);
-                if (c != 0) return c;
-                return string.CompareOrdinal(a.Key, b.Key);
-            });
+                case HistorySort.Count:
+                    sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? a.Value.Count.CompareTo(b.Value.Count)
+                            : b.Value.Count.CompareTo(a.Value.Count);
+                        if (c != 0) return c;
+                        return string.CompareOrdinal(a.Key, b.Key);
+                    });
+                    break;
+                case HistorySort.Date:
+                    sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? a.Value.LastTicks.CompareTo(b.Value.LastTicks)
+                            : b.Value.LastTicks.CompareTo(a.Value.LastTicks);
+                        if (c != 0) return c;
+                        return string.CompareOrdinal(a.Key, b.Key);
+                    });
+                    break;
+                case HistorySort.Alphabet:
+                    sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? string.CompareOrdinal(a.Key, b.Key)
+                            : string.CompareOrdinal(b.Key, a.Key);
+                        return c;
+                    });
+                    break;
+                case HistorySort.Time:
+                    {
+                        // Индекс в historyOrder — порядок первой регистрации.
+                        // Собираем карту для быстрого доступа.
+                        var orderMap = new Dictionary<string, int>(StringComparer.Ordinal);
+                        for (int i = 0; i < historyOrder.Count; i++)
+                            orderMap[historyOrder[i]] = i;
+                        sorted.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                        {
+                            int ia, ib;
+                            orderMap.TryGetValue(a.Key, out ia);
+                            orderMap.TryGetValue(b.Key, out ib);
+                            int c = historySortAsc ? ia - ib : ib - ia;
+                            if (c != 0) return c;
+                            return string.CompareOrdinal(a.Key, b.Key);
+                        });
+                    }
+                    break;
+            }
             return sorted;
         }
 
@@ -1216,6 +1290,10 @@ UpdateClickableCache(t);
                     "banned [" + bannedWords.Count + "]  (open ban list)", bannedWords.Count));
                 sb.AppendLine();
             }
+
+            // Строка фильтров сортировки — кликабельна.
+            AddSortButtons(sb);
+            sb.AppendLine();
 
             if (sorted.Count == 0)
             {
@@ -1315,6 +1393,76 @@ UpdateClickableCache(t);
             return node;
         }
 
+        // Кнопки сортировки: строка кнопок + строка текущего режима.
+        // Кнопка показывает направление, которое БУДЕТ применено при клике
+        // (для активного режима — противоположное текущему).
+        static void AddSortButtons(StringBuilder sb)
+        {
+            string asc = cfgSortArrowAsc != null ? cfgSortArrowAsc.Value : "↑";
+            string desc = cfgSortArrowDesc != null ? cfgSortArrowDesc.Value : "↓";
+
+            var btns = new List<string>(4);
+            AppendSortButton(btns, HistorySort.Alphabet, "alphabet", asc, desc);
+            AppendSortButton(btns, HistorySort.Count, "count", asc, desc);
+            AppendSortButton(btns, HistorySort.Date, "date", asc, desc);
+            AppendSortButton(btns, HistorySort.Time, "time", asc, desc);
+
+            sb.AppendLine(SafeFormat(cfgSortLine.Value, "sort: " + string.Join(" | ", btns),
+                string.Join(" | ", btns)));
+
+            // Текущий режим — БЕЗ слова "sort", чтобы матчинг по подстроке не
+            // сделал эту строку кликабельной (по условию она не кликабельна).
+            string curName = SortName(historySort);
+            string curArrow = historySortAsc ? asc : desc;
+            sb.AppendLine(SafeFormat(cfgSortCurrent.Value, "current: " + curName + " " + curArrow,
+                curName, curArrow));
+        }
+
+        static void AppendSortButton(List<string> btns, HistorySort mode, string name,
+            string asc, string desc)
+        {
+            // Клик по активному режиму разворачивает текущий; по неактивному —
+            // включает режим с его направлением по умолчанию.
+            bool willAsc = mode == historySort ? !historySortAsc : SortDefaultAsc(mode);
+            btns.Add("sort " + name + " " + (willAsc ? asc : desc));
+            customCmds.Add("sort " + name);
+        }
+
+        static string SortName(HistorySort m)
+        {
+            switch (m)
+            {
+                case HistorySort.Alphabet: return "alphabet";
+                case HistorySort.Date: return "date";
+                case HistorySort.Time: return "time";
+                default: return "count";
+            }
+        }
+
+        // Направление по умолчанию: alphabet/time — ↑ (A-Z, сначала старые),
+        // count/date — ↓ (чаще/свежего выше).
+        static bool SortDefaultAsc(HistorySort m)
+        {
+            return m == HistorySort.Alphabet || m == HistorySort.Time;
+        }
+
+        internal static TerminalNode HandleSort(Terminal t, string rawArg)
+        {
+            string a = rawArg == null ? "" : rawArg.Trim().ToLowerInvariant();
+            HistorySort mode;
+            if (a == "alphabet" || a == "alpha" || a == "name") mode = HistorySort.Alphabet;
+            else if (a == "count" || a == "c" || a == "uses") mode = HistorySort.Count;
+            else if (a == "date" || a == "last") mode = HistorySort.Date;
+            else if (a == "time" || a == "first" || a == "json" || a == "order") mode = HistorySort.Time;
+            else return BuildHistoryNode(t);
+
+            if (mode == historySort) historySortAsc = !historySortAsc;
+            else { historySort = mode; historySortAsc = SortDefaultAsc(mode); }
+
+            mls.LogInfo("[TerminalCursor] sort -> " + SortName(mode) + (historySortAsc ? " asc" : " desc"));
+            return BuildHistoryNode(t);
+        }
+
         // string.Format с падением на безопасный вариант (конфиг правят руками).
         static string SafeFormat(string fmt, string fallback, params object[] args)
         {
@@ -1355,7 +1503,11 @@ UpdateClickableCache(t);
             });
             int drop = history.Count - max;
             for (int i = 0; i < drop && i < all.Count; i++)
-                history.Remove(all[i].Key);
+            {
+                string dk = all[i].Key;
+                history.Remove(dk);
+                historyOrder.Remove(dk);
+            }
         }
 
         static void LoadData()
@@ -1396,11 +1548,14 @@ UpdateClickableCache(t);
                                 int count = JsonReadInt(valObj, "c", 1);
                                 long ticks = JsonReadLong(valObj, "t", 0);
                                 if (key.Length == 0) continue;
-                                history[key.ToLowerInvariant()] = new HistoryEntry
+                                string lk = key.ToLowerInvariant();
+                                history[lk] = new HistoryEntry
                                 {
                                     Count = Math.Max(1, count),
                                     LastTicks = ticks
                                 };
+                                // Порядок в файле = порядок первой регистрации.
+                                if (!historyOrder.Contains(lk)) historyOrder.Add(lk);
                             }
                         }
                     }
@@ -1443,8 +1598,25 @@ UpdateClickableCache(t);
                 var sb = new StringBuilder();
                 sb.Append("{\"v\":1,\"e\":{");
                 bool first = true;
+                // Пишем в порядке historyOrder: порядок ключей в файле остаётся
+                // порядком первой регистрации независимо от обхода Dictionary.
+                foreach (string k in historyOrder)
+                {
+                    HistoryEntry ent;
+                    if (!history.TryGetValue(k, out ent)) continue;
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(JsonQuote(k))
+                      .Append(":{\"c\":")
+                      .Append(ent.Count)
+                      .Append(",\"t\":").Append(ent.LastTicks)
+                      .Append('}');
+                }
+                // Страховка: ключ есть в словаре, но потерялся в порядке.
+                var written = new HashSet<string>(historyOrder, StringComparer.Ordinal);
                 foreach (KeyValuePair<string, HistoryEntry> kv in history)
                 {
+                    if (written.Contains(kv.Key)) continue;
                     if (!first) sb.Append(',');
                     first = false;
                     sb.Append(JsonQuote(kv.Key))
@@ -1549,7 +1721,7 @@ UpdateClickableCache(t);
             string key = rawArg.Trim().ToLowerInvariant();
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
             if (key.Length > 0) key = ResolveHistoryArg(key);
-            if (key.Length > 0 && history.Remove(key))
+            if (key.Length > 0 && RemoveHistoryKey(key))
             {
                 SaveData();
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
@@ -1571,6 +1743,7 @@ UpdateClickableCache(t);
             if (key.Length > 0)
             {
                 history.Remove(key); // Удаляем из истории сразу.
+                historyOrder.Remove(key);
                 if (bannedWords.Add(key))
                 {
                     SaveData();
@@ -1724,9 +1897,8 @@ UpdateClickableCache(t);
                     }
                     // Если не нашли цель — пусть игра вернёт ParserError
                 }
-                // delete/del/remove/rem <cmd> / ban <cmd> / unban <cmd> — управление
-                // историей. Хендлер возвращает свежую страницу (history/bans) —
-                // терминал сразу показывает обновлённый список.
+                // delete/del/remove/rem <cmd> / ban <cmd> / unban <cmd> /
+                // sort <mode> — управление историей.
                 string lower0 = parts[0].ToLowerInvariant();
                 if (lower0 == "delete" || lower0 == "del" || lower0 == "remove" || lower0 == "rem")
                 { __result = TerminalCursorPlugin.HandleDelete(__instance, s.Substring(parts[0].Length).Trim()); return false; }
@@ -1734,6 +1906,8 @@ UpdateClickableCache(t);
                 { __result = TerminalCursorPlugin.HandleBan(__instance, s.Substring(parts[0].Length).Trim()); return false; }
                 if (lower0 == "unban")
                 { __result = TerminalCursorPlugin.HandleUnban(__instance, s.Substring(parts[0].Length).Trim()); return false; }
+                if (lower0 == "sort")
+                { __result = TerminalCursorPlugin.HandleSort(__instance, s.Substring(parts[0].Length).Trim()); return false; }
 
                 return true;
             }
