@@ -25,6 +25,45 @@ the caret always stays at the end of the text.
 
 # Releases
 
+### 1.1.0
+* **Command history.** Typing `history` (or clicking it) opens a page with every
+  command ever typed or clicked in the terminal, with a usage counter and the
+  last-used date:
+  `№1  >store  [16, 18.10.2026]  del 1 | ban 1`
+  Line numbers are padded so the `>` column always lines up. Clicking the
+  command itself runs it; `del <n>` / `ban <n>` remove or block it. Both handlers
+  re-render the page immediately, so the list is always current.
+* **Storage.** History and the ban list share one file,
+  `BepInEx/config/TerminalCursor.json` — one per game installation, so counters
+  are global across all servers and saves and survive restarts. Written as a
+  compact JSON object: `{"v":1,"e":{"<command>":{"c":uses,"t":ticks}},"b":[...]}`.
+  Keys are written in order of first registration, which is what the `time`
+  sort uses. No third-party JSON library is bundled (the whole mod stays ~40 KB).
+* **Ban list.** `ban <cmd>` blocks a command: it is removed from history and will
+  not be recorded again. `ban` / `unban` with no argument opens the ban list,
+  where every line `№1  >unban buy` unbans on click, with a `>history` link back.
+* **Sorting.** The history page has a clickable filter row:
+  `sort: sort alphabet ↑ | sort count ↓ | sort date ↓ | sort time ↑`
+  plus a non-clickable `current: count ↓` line. Clicking a mode switches to it
+  with its natural direction (alphabet/time ascending, count/date descending);
+  clicking the active mode again reverses it. `time` follows the order of keys
+  in the JSON file, i.e. order of first use.
+* **Management aliases.** `delete`, `del`, `remove`, `rem` all remove a command
+  (3+ letters, matching the game's own abbreviation style). The argument is
+  either a line number (`del 2`) or the command itself (`del buy shovel`).
+  Management commands are never recorded into the history themselves.
+* **Long / wrapped commands stay clickable.** On the mod's own pages
+  (`TC_history`, `TC_bans`) commands are matched by plain substring search in the
+  whole node text instead of per-line N-grams, so a command that TextMeshPro
+  wraps onto a second visual line is still highlighted and clickable as one
+  piece. Vanilla pages keep the stricter line-based matching to avoid false hits.
+* **Highlighting no longer flickers.** The highlight cache is rebuilt when the
+  count of *visible* characters changes, not only on text/line-count changes, so
+  the typewriter animation no longer drops highlights mid-reveal.
+* All new text (headers, line templates, arrows, sort labels) lives in BepInEx
+  `ConfigEntry` values, so any translator mod (RTLC, XUnity, ...) can localise it
+  by editing `BepInEx/config/TerminalCursor.cfg`.
+
 ### 1.0.2
 * Commands requiring an argument (info, view, route, buy, TRANSMIT, etc.) now
   type the command with a trailing space into the input field instead of

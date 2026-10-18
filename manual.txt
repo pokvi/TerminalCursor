@@ -20,7 +20,6 @@
        TerminalCursor.csproj   <- конфиг сборки (пути к DLL игры)
        NuGet.Config
      test.bat                 <- ОДИН СПОСОБ тестировать мод (см. ниже)
-     TerminalCursor.sln
      publish\                 <- сюда PostBuild копирует готовый dll
    ВНИМАНИЕ: файла AutoStart.cs здесь БОЛЬШЕ НЕТ (удалён). Авто-хост лобби
    и авто-открытие терминала в этом репо НЕ живут. См. пункт 2.

@@ -4,7 +4,7 @@
         <TargetFramework>netstandard2.1</TargetFramework>
         <AssemblyName>TerminalCursor</AssemblyName>
         <Description>TerminalCursor mod</Description>
-        <Version>1.0.2</Version>
+        <Version>1.1.0</Version>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <LangVersion>latest</LangVersion>
         <!-- Реальные пути к игре на этой машине (см. PATHS.txt) -->
