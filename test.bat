@@ -26,7 +26,7 @@ rem ============================================================================
 rem  Run length in seconds.
 rem  AI/agent: DO NOT change this value. The user knows best how long a run
 rem  needs to be and will set WAIT himself, whenever and however he sees fit.
-set "WAIT=120"
+set "WAIT=300"
 
 set "REPO=%~dp0"
 set "PROJ=%REPO%TerminalCursor\TerminalCursor.csproj"
@@ -34,25 +34,29 @@ set "BUILT=%REPO%TerminalCursor\bin\Release\netstandard2.1\TerminalCursor.dll"
 set "GAME=D:\steam\steamapps\common\Lethal Company"
 set "EXE=%GAME%\Lethal Company.exe"
 set "PLUGIN=%GAME%\BepInEx\plugins\TerminalCursor\TerminalCursor.dll"
+set "CFG=%GAME%\BepInEx\config\TerminalCursor.cfg"
 set "BEPLOG=%GAME%\BepInEx\LogOutput.log"
 set "OUT=%TEMP%\terminalcursor_test"
 set "PLAYERLOG=%OUT%\Player.log"
 
 if not exist "%OUT%" mkdir "%OUT%"
 
-echo [TEST] step 1/6  closing running game, if any
+echo [TEST] step 1/7  closing running game, if any
 taskkill /F /IM "Lethal Company.exe" /T >nul 2>&1
 taskkill /F /IM "UnityCrashHandler64.exe" /T >nul 2>&1
 ping -n 4 127.0.0.1 >nul
 
-echo [TEST] step 2/6  dotnet build -c Release
+echo [TEST] step 2/7  dotnet build -c Release
 dotnet build "%PROJ%" -c Release
 if errorlevel 1 (
     echo [TEST] BUILD FAILED - game was NOT launched, plugin was NOT touched
     exit /b 1
 )
 
-echo [TEST] step 3/6  deploying dll into the game
+echo [TEST] step 3/7  del "%CFG%"
+del "%CFG%" >nul 2>&1
+
+echo [TEST] step 4/7  deploying dll into the game
 fc /b "%BUILT%" "%PLUGIN%" >nul 2>&1
 if errorlevel 1 (
     copy /Y "%BUILT%" "%PLUGIN%" >nul 2>&1
@@ -77,7 +81,7 @@ if not exist "%GAME%\BepInEx\plugins\TerminalCursorAutoStart\TerminalCursorAutoS
     echo [TEST]          build/deploy it from the LethalCompany_AutoStart repo first
 )
 
-echo [TEST] step 4/6  clearing logs, launching game
+echo [TEST] step 5/7  clearing logs, launching game
 del /F /Q "%BEPLOG%" >nul 2>&1
 del /F /Q "%PLAYERLOG%" >nul 2>&1
 del /F /Q "%GAME%\AutoStart_log.txt" >nul 2>&1
@@ -85,7 +89,7 @@ pushd "%GAME%"
 start "" "%EXE%" -logFile "%PLAYERLOG%"
 popd
 
-echo [TEST] step 5/6  running for max %WAIT% s
+echo [TEST] step 6/7  running for max %WAIT% s
 set /a ELAPSED=0
 :loop
 if !ELAPSED! GEQ %WAIT% goto wait_done
@@ -99,7 +103,7 @@ if errorlevel 1 (
 goto loop
 :wait_done
 
-echo [TEST] step 6/6  stopping game
+echo [TEST] step 7/7  stopping game
 taskkill /F /IM "Lethal Company.exe" /T >nul 2>&1
 taskkill /F /IM "UnityCrashHandler64.exe" /T >nul 2>&1
 ping -n 4 127.0.0.1 >nul

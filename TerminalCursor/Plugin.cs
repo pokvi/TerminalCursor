@@ -63,7 +63,7 @@ namespace TerminalCursor
         {
             if (runner != null) return;
             var go = new GameObject("TerminalCursorRunner");
-            UnityEngine.Object.DontDestroyOnLoad(go);
+            DontDestroyOnLoad(go);
             go.hideFlags = HideFlags.HideAndDontSave;
             runner = go.AddComponent<TerminalCursorRunner>();
             mls.LogInfo("[TerminalCursor] runner created in scene '" + UnityEngine.SceneManagement.SceneManager.GetActiveScene().name + "'");
@@ -75,21 +75,16 @@ namespace TerminalCursor
             mls = base.Logger;
 
             // Инициализация config-строк (для переводчиков: RTLC, XUnity и др.)
-            var cfg = Config.Bind("Strings", "HeaderSwitch", "Switching radar cam view.",
+            var cfgHeaderSwitch = Config.Bind("Strings", "HeaderSwitch", "Switching radar cam view.",
                 "Header text for switch target list page");
-            cfgHeaderSwitch = cfg;
-            cfg = Config.Bind("Strings", "HeaderPing", "Ping radar booster.",
+            var cfgHeaderPing = Config.Bind("Strings", "HeaderPing", "Ping radar booster.",
                 "Header text for ping target list page");
-            cfgHeaderPing = cfg;
-            cfg = Config.Bind("Strings", "HeaderFlash", "Flash radar booster.",
+            var cfgHeaderFlash = Config.Bind("Strings", "HeaderFlash", "Flash radar booster.",
                 "Header text for flash target list page");
-            cfgHeaderFlash = cfg;
-            cfg = Config.Bind("Strings", "MarkCurrent", "(current)",
+            var cfgMarkCurrent = Config.Bind("Strings", "MarkCurrent", "(current)",
                 "Label for the current radar target");
-            cfgMarkCurrent = cfg;
-            cfg = Config.Bind("Strings", "MarkRadar", "(radar)",
+            var cfgMarkRadar = Config.Bind("Strings", "MarkRadar", "(radar)",
                 "Label for non-player radar targets");
-            cfgMarkRadar = cfg;
             InitHistory(Config);
 
 On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
@@ -142,6 +137,8 @@ On.Terminal.BeginUsingTerminal += Terminal_BeginUsingTerminal;
             }
 
 currentTerminal = self;
+            currentFolder = "all";
+            armedFolder = null;
             lastText = null;
             lastCharCount = -1;
             lastVisLines = -1;
@@ -571,6 +568,70 @@ private void Terminal_QuitTerminal(On.Terminal.orig_QuitTerminal orig, Terminal 
         {
             if (t.screenText == null || string.IsNullOrEmpty(key)) return;
 
+            // Если армим папку (после "page <имя> $") — добавляем команду в папку.
+            // Но команды управления (sort, page, del, ban, unban, history) НЕ
+            // поглощаются — они должны работать как обычно.
+            if (!string.IsNullOrEmpty(armedFolder))
+            {
+                string armKey = Normalize(key);
+                int sp = key.IndexOf(' ');
+                string firstWord = sp < 0 ? armKey : Normalize(key.Substring(0, sp));
+                // Команды управления не поглощаются армом.
+                if (firstWord != "sort" && firstWord != "page" &&
+                    firstWord != "del" && firstWord != "delete" &&
+                    firstWord != "rem" && firstWord != "remove" &&
+                    firstWord != "ban" && firstWord != "unban" &&
+                    firstWord != HistoryWord)
+                {
+                    if (armKey.Length > 0 && !folders[armedFolder].Contains(armKey))
+                    {
+                        folders[armedFolder].Add(armKey);
+                        SaveData();
+                        mls.LogInfo("[TerminalCursor] added '" + armKey + "' to folder '" + armedFolder + "'");
+                    }
+                    armedFolder = null;
+                    // Возвращаем обновлённую страницу.
+                    BuildHistoryNode(t);
+                    t.screenText.ActivateInputField();
+                    t.screenText.stringPosition = t.screenText.text.Length;
+                    t.screenText.selectionStringFocusPosition = t.screenText.text.Length;
+                    t.screenText.ForceLabelUpdate();
+                    return;
+                }
+                // Команда управления — пропускаем дальше (не поглощаем).
+            }
+
+            // Клик по "page" на TC_ странице — подставляем "page " в конец,
+            // не стирая текст страницы.
+            if (Normalize(key) == "page" && t.currentNode != null &&
+                t.currentNode.name.StartsWith("TC_"))
+            {
+                string typed = "page ";
+                string baseText = t.screenText.text ?? "";
+                if (baseText.EndsWith(typed, StringComparison.OrdinalIgnoreCase)) return;
+                string newTextPage = baseText + typed;
+
+                var modField = t.GetType().GetField("modifyingText",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance);
+                if (modField != null) modField.SetValue(t, true);
+                t.screenText.text = newTextPage;
+                t.currentText = newTextPage;
+                t.textAdded = typed.Length;
+
+                t.screenText.ActivateInputField();
+                t.screenText.stringPosition = newTextPage.Length;
+                t.screenText.selectionStringFocusPosition = newTextPage.Length;
+                t.screenText.ForceLabelUpdate();
+                lastText = null;
+                lastCharCount = -1;
+                lastVisLines = -1;
+                mls.LogInfo("[TerminalCursor] type 'page ' (needs arg) -> node '" + t.currentNode.name + "'");
+                return;
+            }
+
+
+
             // Команды с обязательным аргументом: вводим текст, не выполняем.
             // Игра не парсит такой глагол один (ParserError), поэтому клик только
             // подставляет "info " в конец поля — пользователь дописывает аргумент
@@ -755,7 +816,7 @@ UpdateClickableCache(t);
             keyMap.Clear();
             requiresArg.Clear(); // Сброс: моды могут добавлять/убирать глаголы с compatibleNouns.
 
-            // Кастомные узлы (TC_switch, TC_ping, TC_flash) — берём команды из customCmds
+            // Кастомные узлы (TC_switch, TC_ping, TC_flash, TC_history, TC_bans) — берём команды из customCmds
             if (nodeKey != null && nodeKey.StartsWith("TC_"))
             {
                 foreach (var cmd in customCmds) AddKey(cmd);
@@ -824,6 +885,9 @@ UpdateClickableCache(t);
             // ban/unban — страницы банов
             AddKey("ban");
             AddKey("unban");
+            // page — навигация по папкам (требует аргумент: имя папки или $)
+            AddKey("page");
+            requiresArg.Add("page");
         }
 
         // Ключ кладём под нормализованной формой (для сверки со словами экрана),
@@ -1049,12 +1113,14 @@ UpdateClickableCache(t);
         //  игры при клике по строке истории (customCmds -> ExecuteCommand).
         // ====================================================================
         static ConfigEntry<bool> cfgHistoryEnabled;
-        static ConfigEntry<int> cfgHistoryMaxEntries, cfgHistoryPageSize;
+        static ConfigEntry<int> cfgHistoryMaxEntries;
         static ConfigEntry<string> cfgHistoryWord, cfgHistoryHeader, cfgHistoryEmpty;
-        static ConfigEntry<string> cfgHistoryDateFormat, cfgHistoryLineFormat, cfgHistoryMore;
+        static ConfigEntry<string> cfgPageNavLine, cfgFoldersBtn, cfgPageNavTemplate;
+        static ConfigEntry<string> cfgHistoryDateFormat, cfgHistoryLineFormat;
         static ConfigEntry<string> cfgBannedLine, cfgBanHeader, cfgBanEmpty, cfgBanLineFormat;
         static ConfigEntry<string> cfgSortArrowAsc, cfgSortArrowDesc;
         static ConfigEntry<string> cfgSortLine, cfgSortCurrent;
+        static ConfigEntry<string> cfgCreateFolderLine, cfgBackToHistoryLine;
 
         static readonly Dictionary<string, HistoryEntry> history =
             new Dictionary<string, HistoryEntry>(StringComparer.Ordinal);
@@ -1078,6 +1144,13 @@ UpdateClickableCache(t);
         // Забаненные нормализованные команды — не попадают в историю.
         static readonly HashSet<string> bannedWords = new HashSet<string>(StringComparer.Ordinal);
 
+        // Папки команд. Ключ = имя папки, значение = список команд.
+        // "all" — всегда есть, содержит все команды с метаданными.
+        static readonly Dictionary<string, List<string>> folders =
+            new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        static string currentFolder = "all"; // Текущая открытая папка
+        static string armedFolder = null; // Папка для добавления команды (после "page <имя> $")
+
         // Защита от мусора: длина строки в истории и на экране.
         const int HistoryMaxRawLength = 120;
         const int HistoryDisplayLength = 46;
@@ -1095,30 +1168,26 @@ UpdateClickableCache(t);
                 "Record every command typed/clicked in the terminal");
             cfgHistoryMaxEntries = config.Bind("History", "MaxEntries", 200,
                 "Max number of distinct commands to keep");
-            cfgHistoryPageSize = config.Bind("History", "PageSize", 20,
-                "How many lines the 'history' page shows");
             cfgHistoryWord = config.Bind("Strings", "HistoryWord", "history",
                 "Word that opens the command history page");
-            cfgHistoryHeader = config.Bind("Strings", "HistoryHeader", "Command history (most used first):",
+            cfgHistoryHeader = config.Bind("Strings", "HistoryHeader", "Command history:",
                 "Header text of the command history page");
             cfgHistoryEmpty = config.Bind("Strings", "HistoryEmpty", "No commands recorded yet.",
                 "Shown when the history is empty");
             cfgHistoryDateFormat = config.Bind("Strings", "HistoryDateFormat", "dd.MM.yyyy",
                 "DateTime format of the last-used date shown in history lines");
             cfgHistoryLineFormat = config.Bind("Strings", "HistoryLineFormat",
-                "{3}>{0}  [{1}, {2}]  del {4} | ban {4}",
+                "№{3}>{0}  [{1}, {2}]  del {4} | ban {4}",
                 "One history line; {0}=command {1}=times used {2}=last-used date {3}=padded number {4}=plain number");
-            cfgHistoryMore = config.Bind("Strings", "HistoryMore", "(+{0} more)",
-                "Shown when the history does not fit on one page");
             cfgBannedLine = config.Bind("Strings", "HistoryBannedLine",
-                "banned [{0}]  (open ban list)",
+                "ban [{0}]  (open banned list)",
                 "Line on the history page; the word 'banned' opens the ban list ({0}=count)");
             cfgBanHeader = config.Bind("Strings", "BanListHeader", "Banned commands (won't be recorded):",
                 "Header of the ban list page");
             cfgBanEmpty = config.Bind("Strings", "BanListEmpty", "Nothing is banned. Use 'ban <cmd>'.",
                 "Shown when the ban list is empty");
             cfgBanLineFormat = config.Bind("Strings", "BanListLineFormat",
-                "{1}>unban {0}",
+                "№{1}>unban {0}",
                 "One ban list line; {0}=command {1}=padded number");
             cfgSortArrowAsc = config.Bind("Strings", "SortArrowAsc", "↑",
                 "Arrow shown for ascending sort (A-Z / oldest first)");
@@ -1128,12 +1197,27 @@ UpdateClickableCache(t);
                 "Clickable sort buttons line on the history page ({0}=buttons)");
             cfgSortCurrent = config.Bind("Strings", "SortCurrent", "current: {0} {1}",
                 "Current sort indicator ({0}=mode {1}=arrow), not clickable");
+            cfgPageNavLine = config.Bind("Strings", "PageNavLine",
+                "folders: {0}",
+                "Folders navigation line on the history page. {0}=folder buttons separated by ' | '");
+            cfgFoldersBtn = config.Bind("Strings", "FoldersBtn",
+                "page {0} [{1}]",
+                "Folders navigation line on the history page ({0}=name folder {1}=number of commands per folder)");
+            cfgPageNavTemplate = config.Bind("Strings", "PageNavTemplate",
+                "add commands to this folder: page {0} $",
+                "Template shown inside a folder. Clicking it arms the folder so the NEXT clicked command is added to it. {0}=folder name");
+            cfgCreateFolderLine = config.Bind("Strings", "CreateFolderLine",
+                "create folder: click page",
+                "Line instructing how to create a folder");
+            cfgBackToHistoryLine = config.Bind("Strings", "BackToHistoryLine",
+                "{0} [{1}]  (open {0} list)",
+                "Line on ban list returning to history ({0}=history word {1}=history count)");
 
             dataFile = Path.Combine(Paths.ConfigPath, "TerminalCursor.json");
             mls.LogInfo("[TerminalCursor] data: configPath=" + Paths.ConfigPath);
             mls.LogInfo("[TerminalCursor] data: dataFile=" + dataFile);
             LoadData();
-            mls.LogInfo("[TerminalCursor] data: loaded " + history.Count + " entries, " + bannedWords.Count + " banned");
+            mls.LogInfo("[TerminalCursor] data: loaded " + history.Count + " entries, " + bannedWords.Count + " banned, " + folders.Count + " folders");
         }
 
         // Нормализованное слово команды истории (для перехвата и подсветки).
@@ -1169,7 +1253,7 @@ UpdateClickableCache(t);
             if (firstWord == "ban" || firstWord == "unban" ||
                 firstWord == "delete" || firstWord == "del" ||
                 firstWord == "remove" || firstWord == "rem" ||
-                firstWord == "sort") return;
+                firstWord == "sort" || firstWord == "page") return;
             // Banned commands are skipped.
             if (bannedWords.Contains(key)) return;
 
@@ -1180,6 +1264,8 @@ UpdateClickableCache(t);
                 e = new HistoryEntry();
                 history[key] = e;
                 historyOrder.Add(key);
+                // "all" — виртуальная папка (её содержимое = historyOrder),
+                // отдельная запись в folders["all"] не нужна.
                 TrimHistory();
             }
             e.Count++;
@@ -1193,6 +1279,68 @@ UpdateClickableCache(t);
             bool removed = history.Remove(key);
             historyOrder.Remove(key);
             return removed;
+        }
+
+        // Содержимое папки для показа. "all" — виртуальная: все известные команды
+        // в порядке первой регистрации (historyOrder).
+        static List<string> GetFolderCommands(string folder)
+        {
+            if (folder == "all") return new List<string>(historyOrder);
+            List<string> list;
+            return folders.TryGetValue(folder, out list) ? new List<string>(list) : new List<string>();
+        }
+
+        // Сортировка списка записей по текущему режиму (historySort / historySortAsc).
+        static void SortEntries(List<KeyValuePair<string, HistoryEntry>> entries)
+        {
+            switch (historySort)
+            {
+                case HistorySort.Count:
+                    entries.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? a.Value.Count.CompareTo(b.Value.Count)
+                            : b.Value.Count.CompareTo(a.Value.Count);
+                        if (c != 0) return c;
+                        return string.CompareOrdinal(a.Key, b.Key);
+                    });
+                    break;
+                case HistorySort.Date:
+                    entries.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? a.Value.LastTicks.CompareTo(b.Value.LastTicks)
+                            : b.Value.LastTicks.CompareTo(a.Value.LastTicks);
+                        if (c != 0) return c;
+                        return string.CompareOrdinal(a.Key, b.Key);
+                    });
+                    break;
+                case HistorySort.Alphabet:
+                    entries.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                    {
+                        int c = historySortAsc
+                            ? string.CompareOrdinal(a.Key, b.Key)
+                            : string.CompareOrdinal(b.Key, a.Key);
+                        return c;
+                    });
+                    break;
+                case HistorySort.Time:
+                    {
+                        var orderMap = new Dictionary<string, int>(StringComparer.Ordinal);
+                        for (int i = 0; i < historyOrder.Count; i++)
+                            orderMap[historyOrder[i]] = i;
+                        entries.Sort(delegate(KeyValuePair<string, HistoryEntry> a, KeyValuePair<string, HistoryEntry> b)
+                        {
+                            int ia, ib;
+                            orderMap.TryGetValue(a.Key, out ia);
+                            orderMap.TryGetValue(b.Key, out ib);
+                            int c = historySortAsc ? ia - ib : ib - ia;
+                            if (c != 0) return c;
+                            return string.CompareOrdinal(a.Key, b.Key);
+                        });
+                    }
+                    break;
+            }
         }
 
         // История, отсортированная для показа: по заданному режиму и направлению.
@@ -1263,7 +1411,21 @@ UpdateClickableCache(t);
             if (!int.TryParse(rawArg, NumberStyles.Integer, CultureInfo.InvariantCulture, out num))
                 return rawArg;
             if (num < 1) return rawArg;
-            var sorted = GetSortedHistory();
+
+            // Собираем пары из текущей папки и сортируем по активному режиму —
+            // тот же порядок, что показывает страница, поэтому "del 2" == клик
+            // по "del" во второй строке.
+            var sorted = new List<KeyValuePair<string, HistoryEntry>>();
+            foreach (string cmd in GetFolderCommands(currentFolder))
+            {
+                HistoryEntry e;
+                if (history.TryGetValue(cmd, out e))
+                {
+                    sorted.Add(new KeyValuePair<string, HistoryEntry>(cmd, e));
+                }
+            }
+            SortEntries(sorted);
+            
             if (num > sorted.Count) return rawArg;
             return sorted[num - 1].Key;
         }
@@ -1276,9 +1438,22 @@ UpdateClickableCache(t);
         {
             LoadData();
 
-            var sorted = GetSortedHistory();
+            // Собираем пары из текущей папки ("all" = вся история) и сортируем
+            // по активному режиму.
+            var sorted = new List<KeyValuePair<string, HistoryEntry>>();
+            foreach (string cmd in GetFolderCommands(currentFolder))
+            {
+                HistoryEntry e;
+                if (history.TryGetValue(cmd, out e))
+                {
+                    sorted.Add(new KeyValuePair<string, HistoryEntry>(cmd, e));
+                }
+            }
+            // Применяем текущий режим сортировки.
+            SortEntries(sorted);
 
             customCmds.Clear();
+            customCmds.Add("page");  // всегда кликабельно для строки "create folder"
 
             var sb = new StringBuilder();
             sb.AppendLine(cfgHistoryHeader.Value);
@@ -1286,8 +1461,7 @@ UpdateClickableCache(t);
 
             if (bannedWords.Count > 0)
             {
-                sb.AppendLine(SafeFormat(cfgBannedLine.Value,
-                    "banned [" + bannedWords.Count + "]  (open ban list)", bannedWords.Count));
+                sb.AppendLine(SafeFormat(cfgBannedLine, bannedWords.Count));
                 sb.AppendLine();
             }
 
@@ -1295,14 +1469,28 @@ UpdateClickableCache(t);
             AddSortButtons(sb);
             sb.AppendLine();
 
+            // Навигация между папками.
+            AddFolderNavigation(sb);
+            sb.AppendLine();
+
+            // Подсказка о создании папки.
+            sb.AppendLine(cfgCreateFolderLine.Value);
+            sb.AppendLine();
+
+            // Уведомление об арме (добавление в папку).
+            if (!string.IsNullOrEmpty(armedFolder))
+            {
+                sb.AppendLine("click a command to add it to folder '" + armedFolder + "'");
+                sb.AppendLine();
+            }
+
             if (sorted.Count == 0)
             {
                 sb.AppendLine(cfgHistoryEmpty.Value);
             }
             else
             {
-                int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
-                int shown = Math.Min(page, sorted.Count);
+                int shown = sorted.Count; // Все команды на одной странице
                 // Длина номера для выравнивания: "№10 " vs "№1  "
                 int numWidth = (shown.ToString(CultureInfo.InvariantCulture) + " ").Length;
                 for (int i = 0; i < shown; i++)
@@ -1310,7 +1498,7 @@ UpdateClickableCache(t);
                     string cmd = sorted[i].Key;
                     string num = (i + 1).ToString(CultureInfo.InvariantCulture);
                     // Для отображения — с символом и пробелами.
-                    string numPad = "№" + num.PadRight(numWidth);
+                    string numPad = num.PadRight(numWidth);
                     // Для команд — только число.
                     string numCmd = num;
                     customCmds.Add(cmd);
@@ -1323,12 +1511,8 @@ UpdateClickableCache(t);
                     // {3} — номер с № и выравниванием (левый столбец),
                     // {4} — чистый номер: он же лежит в customCmds, поэтому
                     // кнопки "del 1"/"ban 1" матчатся и кликабельны.
-                    sb.AppendLine(SafeFormat(cfgHistoryLineFormat.Value,
-                        numPad + ">" + cmd + "  [" + cnt + ", " + date + "]  del " + numCmd + " | ban " + numCmd,
-                        cmd, cnt, date, numPad, numCmd));
+                    sb.AppendLine(SafeFormat(cfgHistoryLineFormat, cmd, cnt, date, numPad, numCmd));
                 }
-            if (sorted.Count > shown)
-                    sb.AppendLine(string.Format(cfgHistoryMore.Value, sorted.Count - shown));
             }
 
             // Слово 'ban' из строки "banned [N] (open ban list)" должно быть
@@ -1363,7 +1547,7 @@ UpdateClickableCache(t);
 
             // Возврат к истории — вверху списка, кликабельно.
             customCmds.Add(HistoryWord);
-            sb.AppendLine(">history  (back to history)");
+            sb.AppendLine(SafeFormat(cfgBackToHistoryLine, cfgHistoryWord.Value, history.Count));
             sb.AppendLine();
 
             if (bannedWords.Count == 0)
@@ -1374,24 +1558,20 @@ UpdateClickableCache(t);
             {
                 var list = new List<string>(bannedWords);
                 list.Sort(StringComparer.Ordinal);
-                int page = cfgHistoryPageSize != null ? Math.Max(1, cfgHistoryPageSize.Value) : 20;
-                int shown = Math.Min(page, list.Count);
+                int shown = list.Count; // Все баны на одной странице
                 // Длина номера для выравнивания
                 int numWidth = (shown.ToString(CultureInfo.InvariantCulture) + " ").Length;
                 for (int i = 0; i < shown; i++)
                 {
                     string w = list[i];
                     string num = (i + 1).ToString(CultureInfo.InvariantCulture);
-                    string numPad = "№" + num.PadRight(numWidth);
+                    string numPad = num.PadRight(numWidth);
                     string disp = w.Length > HistoryDisplayLength - 14
                         ? w.Substring(0, HistoryDisplayLength - 17) + "..."
                         : w;
                     customCmds.Add("unban " + w);
-                    sb.AppendLine(SafeFormat(cfgBanLineFormat.Value,
-                        numPad + ">unban " + disp, disp, numPad));
+                    sb.AppendLine(SafeFormat(cfgBanLineFormat, disp, numPad));
                 }
-                if (list.Count > shown)
-                    sb.AppendLine(string.Format(cfgHistoryMore.Value, list.Count - shown));
             }
 
             var node = ScriptableObject.CreateInstance<TerminalNode>();
@@ -1419,15 +1599,13 @@ UpdateClickableCache(t);
             AppendSortButton(btns, HistorySort.Date, "date", asc, desc);
             AppendSortButton(btns, HistorySort.Time, "time", asc, desc);
 
-            sb.AppendLine(SafeFormat(cfgSortLine.Value, "sort: " + string.Join(" | ", btns),
-                string.Join(" | ", btns)));
+            sb.AppendLine(SafeFormat(cfgSortLine, string.Join(" | ", btns)));
 
             // Текущий режим — БЕЗ слова "sort", чтобы матчинг по подстроке не
             // сделал эту строку кликабельной (по условию она не кликабельна).
             string curName = SortName(historySort);
             string curArrow = historySortAsc ? asc : desc;
-            sb.AppendLine(SafeFormat(cfgSortCurrent.Value, "current: " + curName + " " + curArrow,
-                curName, curArrow));
+            sb.AppendLine(SafeFormat(cfgSortCurrent, curName, curArrow));
         }
 
         static void AppendSortButton(List<string> btns, HistorySort mode, string name,
@@ -1438,6 +1616,43 @@ UpdateClickableCache(t);
             bool willAsc = mode == historySort ? !historySortAsc : SortDefaultAsc(mode);
             btns.Add("sort " + name + " " + (willAsc ? asc : desc));
             customCmds.Add("sort " + name);
+        }
+
+        // Строка навигации между папками: "page store | page tools"
+        // + строка-шаблон "page <current> $" (кроме all).
+        static void AddFolderNavigation(StringBuilder sb)
+        {
+            // Все папки, кроме текущей.
+            var btns = new List<string>();
+            List<string> foldersArr = ["all", ..folders.Keys];
+            foreach (var kv in foldersArr)
+            {
+                if (kv == currentFolder) continue;
+                btns.Add(kv);
+            }
+            if (btns.Count > 0)
+            {
+                var navBtns = new List<string>();
+                foreach (string f in btns)
+                {
+                    var countFolder = f == "all" ? history.Count : folders[f].Count;
+                    var foldersBtnText = cfgFoldersBtn.Value;
+                    if (countFolder < 1)
+                        cfgFoldersBtn.Value = foldersBtnText[..foldersBtnText.LastIndexOf(' ')];
+                    navBtns.Add(SafeFormat(cfgFoldersBtn, countFolder < 1 ? [f] : [f, countFolder]));
+                    cfgFoldersBtn.Value = foldersBtnText;
+                    customCmds.Add("page " + f);
+                }
+                string joined = string.Join(" | ", navBtns);
+                sb.AppendLine(SafeFormat(cfgPageNavLine, joined));
+            }
+
+            // Шаблон: "page <current> $" — кликабельный (кроме all).
+            if (currentFolder != "all")
+            {
+                sb.AppendLine(SafeFormat(cfgPageNavTemplate, currentFolder));
+                customCmds.Add($"page {currentFolder} $");
+            }
         }
 
         static string SortName(HistorySort m)
@@ -1475,12 +1690,60 @@ UpdateClickableCache(t);
             return BuildHistoryNode(t);
         }
 
-        // string.Format с падением на безопасный вариант (конфиг правят руками).
-        static string SafeFormat(string fmt, string fallback, params object[] args)
+        // page <имя> — открыть/создать папку.
+        // page <имя> $ — армить добавление команды в папку (возвращает в all).
+        // page all — вернуться к полной истории.
+        internal static TerminalNode HandlePage(Terminal t, string rawArg)
         {
-            try { return string.Format(fmt, args); }
-            catch (FormatException) { return fallback; }
-            catch (IndexOutOfRangeException) { return fallback; }
+            LoadData();
+            mls.LogInfo("[TerminalCursor] HandlePage rawArg='" + rawArg + "'");
+            string a = rawArg == null ? "" : rawArg.Trim().ToLowerInvariant();
+            if (a.Length == 0) return BuildHistoryNode(t);
+
+            // Спецсимвол '$' в конце — арм добавления.
+            bool arm = a.EndsWith("$");
+            if (arm) a = a.Substring(0, a.Length - 1).Trim();
+            if (a.Length == 0) return BuildHistoryNode(t);
+
+            // "all" — виртуальная папка: открывается, но не создаётся и не армится.
+            if (a == "all")
+            {
+                currentFolder = "all";
+                armedFolder = null;
+                mls.LogInfo("[TerminalCursor] opened folder: 'all'");
+                return BuildHistoryNode(t);
+            }
+
+            if (arm)
+            {
+                if (!folders.ContainsKey(a))
+                {
+                    folders[a] = new List<string>();
+                    SaveData();
+                }
+                currentFolder = "all";
+                armedFolder = a;
+                mls.LogInfo("[TerminalCursor] armed: next command goes to '" + a + "'");
+                return BuildHistoryNode(t);
+            }
+
+            if (!folders.ContainsKey(a))
+            {
+                folders[a] = new List<string>();
+                SaveData();
+            }
+            currentFolder = a;
+            armedFolder = null;
+            mls.LogInfo("[TerminalCursor] opened folder: '" + currentFolder + "'");
+            return BuildHistoryNode(t);
+        }
+
+        // string.Format с падением на безопасный вариант (конфиг правят руками).
+        static string SafeFormat(ConfigEntry<string> fmt, params object[] args)
+        {
+            try { return string.Format(fmt.Value, args); }
+            catch (FormatException) { return string.Format((string)fmt.DefaultValue, args); }
+            catch (IndexOutOfRangeException) { return string.Format((string)fmt.DefaultValue, args); }
         }
 
         static string FormatTicks(long ticks)
@@ -1530,10 +1793,12 @@ UpdateClickableCache(t);
             try
             {
                 string json = File.ReadAllText(dataFile, Encoding.UTF8);
-                int eStart = json.IndexOf("\"e\"");
-                if (eStart >= 0)
+                
+                // Загружаем "all" — полноценный словарь с метаданными.
+                int allStart = json.IndexOf("\"all\"");
+                if (allStart >= 0)
                 {
-                    int braceStart = json.IndexOf('{', eStart);
+                    int braceStart = json.IndexOf('{', allStart);
                     if (braceStart >= 0)
                     {
                         int braceEnd = FindMatchingBracket(json, braceStart);
@@ -1560,18 +1825,69 @@ UpdateClickableCache(t);
                                 int count = JsonReadInt(valObj, "c", 1);
                                 long ticks = JsonReadLong(valObj, "t", 0);
                                 if (key.Length == 0) continue;
-                                string lk = key.ToLowerInvariant();
-                                history[lk] = new HistoryEntry
+                                history[key] = new HistoryEntry
                                 {
                                     Count = Math.Max(1, count),
                                     LastTicks = ticks
                                 };
-                                // Порядок в файле = порядок первой регистрации.
-                                if (!historyOrder.Contains(lk)) historyOrder.Add(lk);
+                                if (!historyOrder.Contains(key)) historyOrder.Add(key);
                             }
                         }
                     }
                 }
+                
+                // Загружаем "e" — словарь пользовательских папок.
+                // "all" — виртуальная (из historyOrder), не храним и не грузим из "e".
+                int eStart = json.IndexOf("\"e\"");
+                if (eStart >= 0)
+                {
+                    int objStart = json.IndexOf('{', eStart);
+                    if (objStart >= 0)
+                    {
+                        int objEnd = FindMatchingBracket(json, objStart);
+                        if (objEnd >= 0)
+                        {
+                            string obj = json.Substring(objStart + 1, objEnd - objStart - 1);
+                            int pos = 0;
+                            while (pos < obj.Length)
+                            {
+                                int keyStart = obj.IndexOf('"', pos);
+                                if (keyStart < 0) break;
+                                int keyEnd = obj.IndexOf('"', keyStart + 1);
+                                if (keyEnd < 0) break;
+                                string folderName = obj.Substring(keyStart + 1, keyEnd - keyStart - 1);
+                                pos = keyEnd + 1;
+                                int colon = obj.IndexOf(':', pos);
+                                if (colon < 0) break;
+                                int arrStart = obj.IndexOf('[', colon);
+                                if (arrStart < 0) break;
+                                int arrEnd = obj.IndexOf(']', arrStart);
+                                if (arrEnd < 0) break;
+                                pos = arrEnd + 1;
+                                string items = obj.Substring(arrStart + 1, arrEnd - arrStart - 1);
+                                
+                                var cmdList = new List<string>();
+                                int ipos = 0;
+                                while (ipos < items.Length)
+                                {
+                                    int s = items.IndexOf('"', ipos);
+                                    if (s < 0) break;
+                                    int e = items.IndexOf('"', s + 1);
+                                    if (e < 0) break;
+                                    cmdList.Add(items.Substring(s + 1, e - s - 1));
+                                    ipos = e + 1;
+                                }
+                                // "all" — виртуальная, пропускаем (дубликат historyOrder).
+                                // Пустые папки тоже сохраняем.
+                                if (folderName != "all")
+                                {
+                                    folders[folderName] = cmdList;
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 int bStart = json.IndexOf("\"b\"");
                 if (bStart >= 0)
                 {
@@ -1608,10 +1924,9 @@ UpdateClickableCache(t);
             try
             {
                 var sb = new StringBuilder();
-                sb.Append("{\"v\":1,\"e\":{");
+                sb.Append("{\"v\":2,\"all\":{");
                 bool first = true;
-                // Пишем в порядке historyOrder: порядок ключей в файле остаётся
-                // порядком первой регистрации независимо от обхода Dictionary.
+                // Пишем "all" — полноценный словарь с метаданными.
                 foreach (string k in historyOrder)
                 {
                     HistoryEntry ent;
@@ -1637,6 +1952,25 @@ UpdateClickableCache(t);
                       .Append(",\"t\":").Append(kv.Value.LastTicks)
                       .Append('}');
                 }
+                sb.Append("},\"e\":{");
+                first = true;
+                // Пишем только пользовательские папки: "all" — виртуальная
+                // (содержимое = historyOrder), дублировать её в "e" не нужно.
+                foreach (var kv in folders)
+                {
+                    if (kv.Key == "all") continue;
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(JsonQuote(kv.Key)).Append(":[");
+                    bool firstCmd = true;
+                    foreach (string cmd in kv.Value)
+                    {
+                        if (!firstCmd) sb.Append(',');
+                        firstCmd = false;
+                        sb.Append(JsonQuote(cmd));
+                    }
+                    sb.Append(']');
+                }
                 sb.Append("},\"b\":[");
                 first = true;
                 foreach (string w in bannedWords)
@@ -1655,19 +1989,25 @@ UpdateClickableCache(t);
         }
 
         // Найти закрывающую ] или } по открывающей [ или { (учёт вложенности и строк).
+        // Глубину уменьшает ЛЮБАЯ закрывающая скобка: внутри объекта с массивами
+        // встреченный ']' обязан уменьшить счётчик, иначе глубина никогда не
+        // вернётся к нулю и папки ("e" содержит массивы) не загрузятся.
         static int FindMatchingBracket(string json, int open)
         {
-            char closing = json[open] == '[' ? ']' : '}';
             int depth = 0, len = json.Length;
             bool inStr = false;
             for (int i = open; i < len; i++)
             {
                 char c = json[i];
-                if (c == '\\' && inStr) { i++; continue; }
-                if (c == '"') inStr = !inStr;
+                if (inStr && c == (char)92) { i++; continue; }
+                if (c == '"') { inStr = !inStr; continue; }
                 if (inStr) continue;
                 if (c == '[' || c == '{') depth++;
-                else if (c == closing) { depth--; if (depth == 0) return i; }
+                else if (c == ']' || c == '}')
+                {
+                    depth--;
+                    if (depth <= 0) return i;
+                }
             }
             return -1;
         }
@@ -1733,8 +2073,26 @@ UpdateClickableCache(t);
             string key = rawArg.Trim().ToLowerInvariant();
             if (key.Length > HistoryMaxRawLength) key = key.Substring(0, HistoryMaxRawLength);
             if (key.Length > 0) key = ResolveHistoryArg(key);
-            if (key.Length > 0 && RemoveHistoryKey(key))
+            if (key.Length > 0)
             {
+                if (currentFolder == "all")
+                {
+                    // Удаляем из всех папок и из all.
+                    foreach (var folder in folders.Values)
+                    {
+                        folder.Remove(key);
+                    }
+                    RemoveHistoryKey(key);
+                }
+                else
+                {
+                    // Удаляем только из текущей папки.
+                    if (folders.ContainsKey(currentFolder))
+                    {
+                        folders[currentFolder].Remove(key);
+                        SaveData();
+                    }
+                }
                 SaveData();
                 mls.LogInfo("[TerminalCursor] delete '" + rawArg + "' -> removed");
             }
@@ -1754,7 +2112,12 @@ UpdateClickableCache(t);
             if (key.Length > 0) key = ResolveHistoryArg(key);
             if (key.Length > 0)
             {
-                history.Remove(key); // Удаляем из истории сразу.
+                // Удаляем из всех папок.
+                foreach (var folder in folders.Values)
+                {
+                    folder.Remove(key);
+                }
+                history.Remove(key);
                 historyOrder.Remove(key);
                 if (bannedWords.Add(key))
                 {
@@ -1871,6 +2234,10 @@ UpdateClickableCache(t);
             string s = __instance.screenText.text.Substring(
                 Mathf.Max(0, __instance.screenText.text.Length - __instance.textAdded));
 
+            // Сырой срез ДО RemovePunctuation: игра снимает пунктуацию, а спецсимвол
+            // '$' (арм добавления в папку) нужен нам целым.
+            string raw = s;
+
             // Вызываем RemovePunctuation игры (приватный метод)
             if (removePunct == null)
                 removePunct = AccessTools.Method(typeof(Terminal), "RemovePunctuation");
@@ -1920,6 +2287,9 @@ UpdateClickableCache(t);
                 { __result = TerminalCursorPlugin.HandleUnban(__instance, s.Substring(parts[0].Length).Trim()); return false; }
                 if (lower0 == "sort")
                 { __result = TerminalCursorPlugin.HandleSort(__instance, s.Substring(parts[0].Length).Trim()); return false; }
+                // page <folder> [ $ ] — навигация / арм. Сырой срез (raw) сохраняет '$'.
+                if (lower0 == "page")
+                { __result = TerminalCursorPlugin.HandlePage(__instance, raw.Substring(parts[0].Length).Trim()); return false; }
 
                 return true;
             }
@@ -1944,6 +2314,12 @@ UpdateClickableCache(t);
                 !TerminalCursorPlugin.VanillaKeywordExists(__instance, cmd))
             {
                 __result = TerminalCursorPlugin.BuildHistoryNode(__instance);
+                return false;
+            }
+            // sort без аргумента -> обновлённая страница с тем же режимом сортировки.
+            if (cmd == "sort")
+            {
+                __result = TerminalCursorPlugin.HandleSort(__instance, "");
                 return false;
             }
             if (cmd != "switch" && cmd != "ping" && cmd != "flash") return true;
