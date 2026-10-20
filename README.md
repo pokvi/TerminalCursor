@@ -25,6 +25,18 @@ the caret always stays at the end of the text.
 
 # Releases
 
+### 1.1.1
+* **Folders.** `history` page now shows a list of named folders: `folders: page all [4] | page pokvi [3] | page таня [2] | page erop [1]`. Each button opens that folder's command list. `all` is virtual — it shows every command in the history.
+* **Adding commands to a folder.** Inside a folder a line `add commands to this folder: page <name> $` appears. Clicking it switches back to `all` and arms the folder — the next command you click is added to that folder instead of being executed.
+* **`page <name> $`** — creates the folder if it doesn't exist, then arms it.
+* **`page <name>`** — opens (or creates) the folder. You can type it manually or click the button.
+* **Folder navigation.** `page all` returns to the full history. Inside a folder, the template line `page <name> $` is shown so you can click it to arm that folder.
+* **Storage format.** Added `"e":{<folder>:[<cmd>,...]}` for folder contents. `"all"` is no longer stored in `"e"` — it is virtual (derived from `history`). New format: `{"v":2,"all":{...},"e":{...},"b":[...]}`.
+* **Sort applies to current folder.** `sort count ↓`, `sort alphabet ↑`, etc. now sort the commands inside the currently open folder, not just the global history. `del <n>` / `ban <n>` resolve their number against the same sort order that is displayed.
+* **`FindMatchingBracket` fix.** The JSON parser now correctly handles nested brackets inside `"e"` (which contains arrays like `["a","b"]`). Previously folders were not loaded from the JSON file.
+* **`page` needs argument.** Clicking `page` on the history page types `page ` into the input field instead of showing a ParserError — the user can then type a folder name or `$`.
+* **Config strings updated.** `PageNavLine`, `FoldersBtn` (`page {0} [{1}]`), `PageNavTemplate` (`add commands to this folder: page {0} $`), `CreateFolderLine`, `BackToHistoryLine` are all configurable. `HistoryMore` removed (no pagination).
+
 ### 1.1.0
 * **Command history.** Typing `history` (or clicking it) opens a page with every
   command ever typed or clicked in the terminal, with a usage counter and the
