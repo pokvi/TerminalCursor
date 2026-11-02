@@ -46,12 +46,11 @@ taskkill /F /IM "Lethal Company.exe" /T >nul 2>&1
 taskkill /F /IM "UnityCrashHandler64.exe" /T >nul 2>&1
 ping -n 4 127.0.0.1 >nul
 
+for %%F in ("%BUILT%") do echo [TEST] deployed old %%~nxF, %%~zF bytes
 echo [TEST] step 2/7  dotnet build -c Release
-dotnet build "%PROJ%" -c Release
-if errorlevel 1 (
-    echo [TEST] BUILD FAILED - game was NOT launched, plugin was NOT touched
-    exit /b 1
-)
+dotnet build "%PROJ%" -c Release > "%TEMP%\tc_build.log" 2>&1
+if errorlevel 1 type "%TEMP%\tc_build.log" & exit /b 1
+del "%TEMP%\tc_build.log"
 
 echo [TEST] step 3/7  del "%CFG%"
 del "%CFG%" >nul 2>&1

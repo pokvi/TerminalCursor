@@ -6,7 +6,7 @@
         <Description>TerminalCursor mod</Description>
         <Version>1.1.0</Version>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-        <LangVersion>latest</LangVersion>
+        <LangVersion>preview</LangVersion>
         <!-- Реальные пути к игре на этой машине (см. PATHS.txt) -->
         <GameDir>D:\steam\steamapps\common\Lethal Company</GameDir>
         <ManagedDir>$(GameDir)\Lethal Company_Data\Managed</ManagedDir>
@@ -30,6 +30,10 @@
 
     <!-- Игровые DLL (только то, что реально нужно Plugin.cs) -->
     <ItemGroup>
+        <Reference Include="Newtonsoft.Json">
+            <HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath>
+            <Private>false</Private>
+        </Reference>
         <Reference Include="Assembly-CSharp">
             <HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath>
             <Private>false</Private>
